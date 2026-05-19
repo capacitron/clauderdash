@@ -1,0 +1,19 @@
+[Unit]
+Description=Claude Code Dashboard (local observability)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__/backend
+Environment="PATH=__PROJECT_DIR__/backend/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin"
+Environment="CLAUDE_DASHBOARD_HOST=127.0.0.1"
+Environment="CLAUDE_DASHBOARD_PORT=7777"
+ExecStart=__PROJECT_DIR__/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 7777
+Restart=on-failure
+RestartSec=3
+# Reasonable resource bounds for a local daemon
+MemoryMax=512M
+CPUQuota=200%
+
+[Install]
+WantedBy=default.target

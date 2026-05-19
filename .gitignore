@@ -1,0 +1,33 @@
+# Python
+backend/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Data (runtime-generated, never commit)
+data/dashboard.db
+data/dashboard.db-wal
+data/dashboard.db-shm
+data/recommendations.json
+data/generator.log
+
+# Env / secrets
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Claude Code plans (personal session state)
+.claude/plans/

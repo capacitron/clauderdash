@@ -1,0 +1,15 @@
+[Unit]
+Description=Claude Code Dashboard — weekly suggestion generator timer (Sun 09:00)
+# claude-token-report.timer runs Mon 09:00 — Sunday avoids clash
+
+[Timer]
+OnCalendar=Sun *-*-* 09:00:00
+# Catch up if machine was off at fire time
+Persistent=true
+# Randomise start within 15-min window to avoid exact-second bursts
+RandomizedDelaySec=900
+Unit=claude-dashboard-suggestions.service
+
+[Install]
+# DO NOT enable at install time — opt-in only via README commands
+WantedBy=timers.target

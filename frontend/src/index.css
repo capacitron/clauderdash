@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100vh;
+  }
+  body {
+    background-color: #080a0d;
+  }
+}
+
+@layer components {
+  .kicker {
+    @apply font-mono text-[10px] font-semibold uppercase tracking-[0.2em] text-text-subtle;
+  }
+  .panel {
+    @apply animate-fade-in rounded-2xl border border-border bg-surface p-6 transition-colors;
+  }
+  .panel:hover {
+    border-color: #364d66;
+  }
+  .stat-num {
+    @apply font-display text-3xl font-semibold text-accent-cyan tabular-nums;
+  }
+  .stat-narrative {
+    @apply mt-1 text-xs leading-relaxed text-text-dim;
+  }
+  .chip {
+    @apply inline-flex items-center rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-xs font-medium text-text-dim transition-colors;
+  }
+  .btn:hover {
+    @apply border-border-glow text-text;
+  }
+  .btn-active {
+    @apply border-accent-cyan/50 bg-accent-cyan/10 text-accent-cyan;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #243040;
+    border-radius: 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-ping,
+  .animate-fade-in {
+    animation: none;
+  }
+  * {
+    transition-duration: 0ms !important;
+  }
+}
+
+/* react-calendar-heatmap overrides */
+.heatmap-wrap .react-calendar-heatmap text {
+  fill: #405060;
+  font-family: "JetBrains Mono", Menlo, monospace;
+  font-size: 8px;
+}
+.heatmap-wrap .react-calendar-heatmap .rch-empty {
+  fill: #141c24;
+}
+.heatmap-wrap .react-calendar-heatmap .rch-q1 {
+  fill: rgba(34, 211, 238, 0.2);
+}
+.heatmap-wrap .react-calendar-heatmap .rch-q2 {
+  fill: rgba(34, 211, 238, 0.45);
+}
+.heatmap-wrap .react-calendar-heatmap .rch-q3 {
+  fill: rgba(34, 211, 238, 0.7);
+}
+.heatmap-wrap .react-calendar-heatmap .rch-q4 {
+  fill: #22d3ee;
+}

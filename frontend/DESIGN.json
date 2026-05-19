@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-02T00:00:00Z",
+  "title": "Design System: Claude Dashboard",
+  "extensions": {
+    "colorMeta": {
+      "bg":               { "role": "neutral",   "displayName": "Engine Room Black",   "canonical": "oklch(8% 0.008 65)",  "tonalRamp": ["#0a0806","#0f0d0a","#1a1510","#231e17","#2d2720","#3d3328","#5c4e3a","#a89070"] },
+      "surface":          { "role": "neutral",   "displayName": "Warm Obsidian",       "canonical": "oklch(12% 0.01 65)",  "tonalRamp": ["#0a0806","#0f0d0a","#1a1510","#231e17","#2d2720","#3d3328","#5c4e3a","#a89070"] },
+      "surface-2":        { "role": "neutral",   "displayName": "Burnished Iron",      "canonical": "oklch(15% 0.012 65)", "tonalRamp": ["#0a0806","#0f0d0a","#1a1510","#231e17","#2d2720","#3d3328","#5c4e3a","#a89070"] },
+      "surface-3":        { "role": "neutral",   "displayName": "Coke Oven",           "canonical": "oklch(18% 0.014 65)", "tonalRamp": ["#0a0806","#0f0d0a","#1a1510","#231e17","#2d2720","#3d3328","#5c4e3a","#a89070"] },
+      "border":           { "role": "neutral",   "displayName": "Gunmetal Seam",       "canonical": "oklch(25% 0.016 65)", "tonalRamp": ["#231e17","#2d2720","#3d3328","#5c4e3a","#6b5a45","#a89070","#c4a87a","#ede5d0"] },
+      "border-glow":      { "role": "neutral",   "displayName": "Patinated Brass",     "canonical": "oklch(33% 0.02 65)",  "tonalRamp": ["#2d2720","#3d3328","#5c4e3a","#6b5a45","#a89070","#c4a87a","#d4ba90","#ede5d0"] },
+      "text":             { "role": "neutral",   "displayName": "Foxed Manuscript",    "canonical": "oklch(91% 0.012 70)", "tonalRamp": ["#5c4e3a","#6b5a45","#a89070","#c4a87a","#d4ba90","#e0d4ba","#ede5d0","#f5f0e8"] },
+      "text-dim":         { "role": "neutral",   "displayName": "Old Patina",          "canonical": "oklch(67% 0.022 65)", "tonalRamp": ["#3d3328","#5c4e3a","#6b5a45","#a89070","#c4a87a","#d4ba90","#ede5d0","#f5f0e8"] },
+      "text-subtle":      { "role": "neutral",   "displayName": "Teak Shadow",         "canonical": "oklch(42% 0.022 65)", "tonalRamp": ["#2d2720","#3d3328","#5c4e3a","#6b5a45","#a89070","#c4a87a","#d4ba90","#ede5d0"] },
+      "accent-amber":     { "role": "primary",   "displayName": "Instrument Amber",    "canonical": "oklch(73% 0.16 65)",  "tonalRamp": ["#4a2e08","#7a4d0e","#c47f1a","#f5a623","#f7b84e","#f9ca7a","#fbd9a0","#fdebc8"] },
+      "accent-amber-dim": { "role": "primary",   "displayName": "Smoldering Amber",    "canonical": "oklch(58% 0.14 62)",  "tonalRamp": ["#3a2208","#5c350c","#c47f1a","#e8943a","#f5a623","#f7b84e","#f9ca7a","#fbd9a0"] },
+      "accent-blue":      { "role": "secondary", "displayName": "Signal Blue",         "canonical": "oklch(63% 0.07 215)", "tonalRamp": ["#1a3040","#2a4d60","#3d6e85","#6a9fb5","#8ab8ca","#a8cdd8","#c4dde6","#e0eef3"] },
+      "accent-green":     { "role": "secondary", "displayName": "Signal Green",        "canonical": "oklch(64% 0.1 145)",  "tonalRamp": ["#1a3018","#2a4d28","#3d6e3a","#7aab6e","#96c088","#aed0a4","#c6dfc0","#deeedd"] },
+      "accent-red":       { "role": "secondary", "displayName": "Signal Red",          "canonical": "oklch(52% 0.12 20)",  "tonalRamp": ["#301410","#4d201a","#7a3428","#c96b5a","#d88878","#e4a498","#eec0b8","#f5dbd8"] },
+      "accent-orange":    { "role": "secondary", "displayName": "Signal Orange",       "canonical": "oklch(68% 0.14 45)",  "tonalRamp": ["#3a2008","#5c320e","#a85818","#e8943a","#f0ad60","#f5c288","#f8d4ac","#fbe6cc"] },
+      "accent-purple":    { "role": "secondary", "displayName": "Signal Purple",       "canonical": "oklch(60% 0.07 300)", "tonalRamp": ["#201828","#352840","#524060","#9b8aaa","#b4a6c0","#c8bed4","#dad5e4","#eceaf2"] }
+    },
+    "typographyMeta": {
+      "display":  { "displayName": "Display",  "purpose": "Primary stat number per panel. Playfair Display. Amber or status color only." },
+      "headline": { "displayName": "Headline", "purpose": "Panel titles and section headers. Inter semibold." },
+      "body":     { "displayName": "Body",     "purpose": "Narrative text under stats. Inter regular. Max 60ch." },
+      "label":    { "displayName": "Label",    "purpose": "Kickers, column headers, axis ticks. JetBrains Mono uppercase tracked." },
+      "data":     { "displayName": "Data",     "purpose": "Dynamic numerical values, timestamps, file paths. JetBrains Mono, tabular-nums." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "fade-in", "value": "opacity 0→1 + translateY 4px→0, 220ms ease-out", "purpose": "Panel mount. The only animation in the system." }
+    ],
+    "breakpoints": [
+      { "name": "md", "value": "768px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Instrument face. Every data readout lives in a panel.",
+      "html": "<section class=\"ds-panel\"><header class=\"ds-panel-header\"><div><div class=\"ds-kicker\">01 · SYSTEM</div><h2 class=\"ds-panel-title\">Burn</h2></div></header><div class=\"ds-panel-body\"><div class=\"ds-stat-num\">$4.20</div><p class=\"ds-stat-narrative\">Within daily baseline. 30-day avg $6.80.</p></div></section>",
+      "css": ".ds-panel { background: #1a1510; border: 1px solid #3d3328; border-radius: 16px; padding: 24px; font-family: Inter, ui-sans-serif, sans-serif; transition: border-color 180ms ease-out; } .ds-panel:hover { border-color: #5c4e3a; } .ds-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; } .ds-kicker { font-family: 'JetBrains Mono', Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: #6b5a45; margin-bottom: 4px; } .ds-panel-title { font-family: Inter, ui-sans-serif, sans-serif; font-size: 1rem; font-weight: 600; color: #ede5d0; margin: 0; } .ds-panel-body { display: flex; flex-direction: column; } .ds-stat-num { font-family: 'Playfair Display', Georgia, serif; font-size: 1.875rem; font-weight: 600; color: #f5a623; font-variant-numeric: tabular-nums; line-height: 1.1; } .ds-stat-narrative { margin-top: 4px; font-size: 0.75rem; color: #a89070; line-height: 1.6; }"
+    },
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "UI control. No filled/CTA variant. All buttons are secondary in visual weight.",
+      "html": "<button class=\"ds-btn\">7d</button><button class=\"ds-btn ds-btn-active\">30d</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 8px; background: #231e17; border: 1px solid #3d3328; border-radius: 8px; padding: 6px 12px; font-family: 'JetBrains Mono', Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #a89070; cursor: pointer; transition: border-color 150ms ease-out, color 150ms ease-out; } .ds-btn:hover { border-color: #5c4e3a; color: #ede5d0; } .ds-btn:focus-visible { outline: 1px solid #f5a623; outline-offset: 2px; } .ds-btn-active { border-color: rgba(245,166,35,0.5); background: rgba(245,166,35,0.1); color: #f5a623; }"
+    },
+    {
+      "name": "Range Toggle",
+      "kind": "nav",
+      "refersTo": "button",
+      "description": "Segmented control for time range selection. Signal Blue for active segment.",
+      "html": "<div class=\"ds-range-toggle\"><button class=\"ds-range-seg\">Today</button><button class=\"ds-range-seg ds-range-active\">7d</button><button class=\"ds-range-seg\">30d</button></div>",
+      "css": ".ds-range-toggle { display: inline-flex; align-items: center; gap: 4px; background: #231e17; border: 1px solid #3d3328; border-radius: 8px; padding: 2px; } .ds-range-seg { background: transparent; border: none; border-radius: 6px; padding: 4px 10px; font-family: 'JetBrains Mono', Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #6b5a45; cursor: pointer; transition: background 120ms ease-out, color 120ms ease-out; } .ds-range-seg:hover { color: #a89070; } .ds-range-active { background: rgba(106,159,181,0.15); color: #6a9fb5; }"
+    },
+    {
+      "name": "Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Status badge. Only for meaningful state signals, never decoration.",
+      "html": "<span class=\"ds-chip ds-chip-red\">Over target</span><span class=\"ds-chip ds-chip-green\">Healthy</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; border-radius: 4px; padding: 2px 8px; font-family: 'JetBrains Mono', Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; } .ds-chip-red { background: rgba(201,107,90,0.1); color: #c96b5a; } .ds-chip-green { background: rgba(122,171,110,0.1); color: #7aab6e; } .ds-chip-amber { background: rgba(245,166,35,0.1); color: #f5a623; }"
+    },
+    {
+      "name": "Kicker",
+      "kind": "custom",
+      "refersTo": "label",
+      "description": "Panel category label. Format: NN · LABEL. Always Teak Shadow, always mono uppercase.",
+      "html": "<div class=\"ds-kicker\">08 · MODEL SPLIT</div>",
+      "css": ".ds-kicker { font-family: 'JetBrains Mono', Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: #6b5a45; }"
+    },
+    {
+      "name": "Empty State",
+      "kind": "custom",
+      "refersTo": "panel",
+      "description": "Absence of data. Intentional silence, not broken UI.",
+      "html": "<div class=\"ds-empty\">No sessions in this range.</div>",
+      "css": ".ds-empty { display: flex; align-items: center; justify-content: center; border: 1px dashed rgba(61,51,40,0.6); border-radius: 8px; padding: 32px 16px; font-family: 'JetBrains Mono', Menlo, monospace; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #6b5a45; text-align: center; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Operator's Console",
+    "overview": "This is an instrument panel, not a reporting dashboard. Every surface is dark alloy. Every readout is precise. The dominant material is warm-tinted black: the color of a forge room, a control deck, a place where work is monitored not celebrated. Amber is the one live signal color — the glow of a warning lamp or a VU meter needle at rest. It never decorates; it informs.\n\nThe typography splits labor cleanly. JetBrains Mono carries all data: kickers, labels, numbers in context. Playfair Display carries only the stat that needs weight — the primary figure on a panel, the number that answers the glance. Inter handles prose and navigation.\n\nThe layout is deliberately sparse between panels. Columns breathe. The empty space is the negative space that makes the signal legible.",
+    "keyCharacteristics": [
+      "Warm-dark color field; amber as the only assertive signal",
+      "Three-font hierarchy: mono for data, display for primary stats, sans for text",
+      "Tonal layering for depth; no box shadows anywhere",
+      "Panels as instruments, not cards — kicker + title + one primary reading",
+      "Hover states reveal depth (border lightens), not decoration"
+    ],
+    "rules": [
+      { "name": "The One Voice Rule", "body": "Instrument Amber (#f5a623) is used on ≤10% of any screen. One primary stat, one active button state, the header title. No amber decorations, no amber backgrounds on panels, no amber text in prose.", "section": "colors" },
+      { "name": "The Warm Cast Rule", "body": "Every neutral is tinted toward amber-brown (approximately oklch hue 60-70). Never use neutral gray. The warmth is the atmosphere.", "section": "colors" },
+      { "name": "The Mono-for-Data Rule", "body": "Any value that changes dynamically — a number, a timestamp, a percentage, a file path — renders in JetBrains Mono, regardless of context.", "section": "typography" },
+      { "name": "The One Big Number Rule", "body": "Each panel has at most one Display-size number. If a panel needs two big numbers, it needs to be two panels.", "section": "typography" },
+      { "name": "The No-Shadow Rule", "body": "box-shadow is prohibited on panels, cards, buttons, and containers. Shadow implies float; nothing in this UI floats.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do use JetBrains Mono for every dynamic value — numbers, timestamps, file paths, percentages.",
+      "Do limit Instrument Amber to one primary stat per panel and active UI states.",
+      "Do express depth through surface toning (surface → surface-2 → surface-3), never shadows.",
+      "Do use noun-form labels: Burn, Discipline, Efficiency — not Current burn rate or How efficient?",
+      "Do keep panel titles short (1-2 words). The kicker carries the category context.",
+      "Do use tabular-nums on all numerical values so columns align.",
+      "Do animate only on mount (fade-in). No hover animations, no transition on layout properties.",
+      "Do use dashed borders for empty states."
+    ],
+    "donts": [
+      "Don't use box-shadow on any surface. This system has no floating elements.",
+      "Don't use neutral gray. Every neutral must be warm-tinted toward brown-amber.",
+      "Don't use gradient text (background-clip: text). Emphasis via weight or Instrument Amber.",
+      "Don't use border-left greater than 1px as a colored accent stripe.",
+      "Don't build a panel that looks like a SaaS metric card: big number, small label, gradient accent. The hero-metric template is prohibited.",
+      "Don't use blue as a dominant accent. Signal Blue is for chart series only.",
+      "Don't put two Display-size numbers in one panel.",
+      "Don't use glassmorphism, blur effects, or translucent overlays as decoration.",
+      "Don't write marketing copy in the UI.",
+      "Don't add motion to chart renders (isAnimationActive stays false)."
+    ]
+  }
+}
