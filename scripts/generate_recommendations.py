@@ -47,6 +47,14 @@ MAX_BUDGET_USD = 0.15
 MODEL = "haiku"
 FALLBACK_MODEL = "sonnet"
 
+# ---------------------------------------------------------------- drift --
+# CLAUDE.md file holding the "Measurable Targets (Drift-Checked)" table.
+# Drift is computed locally (Python + read-only SQL); NOTHING here is ever
+# sent to a model. The model call (telemetry observations) is unchanged.
+CLAUDE_MD_FILE = Path(
+    os.environ.get("CLAUDE_DRIFT_RULES_FILE", Path.home() / "CLAUDE.md")
+)
+
 # ---------------------------------------------------------------- tags --
 # Mirrors backend.config.PROJECT_TAG_RULES. First-match wins.
 # Populate with your own project paths, e.g.:
@@ -138,6 +146,12 @@ JSON_SCHEMA = {
                     "evidence_sql": {"type": "string", "maxLength": 300},
                     "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     "tier": {"type": "string", "enum": ["high", "medium", "low"]},
+                    # Optional drift fields (set by the deterministic drift engine,
+                    # null on model-generated recs). Declared so the shape is valid.
+                    "rule_ref": {"type": ["string", "null"], "maxLength": 120},
+                    "expected": {"type": ["string", "null"], "maxLength": 300},
+                    "actual": {"type": ["string", "null"], "maxLength": 120},
+                    "drift_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
                 },
                 "additionalProperties": False,
             },
@@ -194,6 +208,142 @@ QUERY RESULTS (section headers are NOT tables — they label the aggregate; run 
 {QUERY_RESULTS}
 
 Respond with a JSON object matching the provided schema exactly. No prose outside the JSON."""
+
+
+# ---------------------------------------------------------------- drift --
+# Each check returns a single column `actual` (a number) or NULL (→ skip,
+# no data in window). Thresholds come from the CLAUDE.md table, not here —
+# this file stays authoritative for the numbers. The `id` keys link them.
+RULE_CHECKS: dict[str, str] = {
+    "opus_share": """
+        SELECT ROUND(100.0 *
+          COALESCE(SUM(CASE WHEN model LIKE '%opus%'
+            THEN input_tokens+output_tokens+cache_read_tokens+cache_create_tokens END), 0)
+          / NULLIF(SUM(input_tokens+output_tokens+cache_read_tokens+cache_create_tokens), 0), 1) AS actual
+          FROM messages
+         WHERE role='assistant' AND ts >= datetime('now','-30 days')
+    """,
+    "cache_hit": """
+        SELECT ROUND(100.0 * COALESCE(SUM(cache_read_tokens),0)
+          / NULLIF(SUM(cache_read_tokens + input_tokens),0), 1) AS actual
+          FROM messages
+         WHERE role='assistant' AND ts >= datetime('now','-30 days')
+    """,
+    "fail_rate": """
+        SELECT ROUND(100.0 * SUM(CASE WHEN outcome IN ('errored','rate_limited','truncated')
+                                      THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(*),0), 1) AS actual
+          FROM sessions
+         WHERE started_at >= datetime('now','-30 days')
+    """,
+    "repeat_err": """
+        SELECT COALESCE(MAX(hits),0) AS actual FROM (
+          SELECT COUNT(*) AS hits FROM tool_calls
+           WHERE is_error=1 AND error_preview IS NOT NULL
+             AND started_at >= datetime('now','-7 days')
+        GROUP BY tool_name, substr(error_preview,1,80)
+        )
+    """,
+    "web_err": """
+        SELECT ROUND(100.0 * SUM(CASE WHEN is_error=1 THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(*),0), 1) AS actual
+          FROM tool_calls
+         WHERE tool_name='WebFetch' AND started_at >= datetime('now','-30 days')
+    """,
+}
+
+_THRESHOLD_RE = re.compile(r"(<=|>=|<|>|=)\s*([0-9]+(?:\.[0-9]+)?)\s*(%?)")
+
+
+def parse_drift_targets(claude_md: Path) -> dict[str, dict]:
+    """Parse the 'Measurable Targets (Drift-Checked)' pipe table from CLAUDE.md.
+    Returns {id: {label, window, op, threshold, unit, raw}}. Empty on any failure
+    — a missing/garbled table simply yields zero drift checks, never a crash.
+    """
+    try:
+        text = claude_md.read_text(errors="replace")
+    except OSError:
+        return {}
+    out: dict[str, dict] = {}
+    in_section = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("## "):
+            in_section = "Measurable Targets" in line
+            continue
+        if not in_section or not line.lstrip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        rid = cells[0]
+        if rid in ("id", "") or set(rid) <= {"-", ":"}:
+            continue  # header or separator row
+        m = _THRESHOLD_RE.search(cells[3])
+        if not m:
+            continue
+        out[rid] = {
+            "label": cells[1],
+            "window": cells[2],
+            "op": m.group(1),
+            "threshold": float(m.group(2)),
+            "unit": m.group(3),
+            "raw": cells[3],
+        }
+    return out
+
+
+def _satisfies(actual: float, op: str, threshold: float) -> bool:
+    return {
+        "<": actual < threshold,
+        "<=": actual <= threshold,
+        ">": actual > threshold,
+        ">=": actual >= threshold,
+        "=": actual == threshold,
+    }.get(op, True)
+
+
+def compute_drift(conn: sqlite3.Connection, claude_md: Path) -> list[dict]:
+    """Deterministic intent-vs-behavior check: CLAUDE.md targets vs telemetry.
+    Pure local computation — nothing is sent to any model. Returns rec dicts
+    (same shape as model recs, plus rule_ref/expected/actual/drift_score).
+    A check runs only if its id is BOTH in RULE_CHECKS and declared in CLAUDE.md.
+    """
+    targets = parse_drift_targets(claude_md)
+    recs: list[dict] = []
+    for rid, sql in RULE_CHECKS.items():
+        tgt = targets.get(rid)
+        if not tgt:
+            continue  # not declared in CLAUDE.md → skip
+        try:
+            row = conn.execute(sql).fetchone()
+        except sqlite3.Error as e:
+            print(f"[DRIFT] check {rid} SQL error: {e}", file=sys.stderr)
+            continue
+        actual = row["actual"] if row else None
+        if actual is None:
+            continue  # no data in window → no drift claim
+        actual = float(actual)
+        if _satisfies(actual, tgt["op"], tgt["threshold"]):
+            continue  # compliant → no drift
+        gap = abs(actual - tgt["threshold"])
+        drift_score = round(max(0.0, min(1.0, gap / max(tgt["threshold"], 1.0))), 2)
+        actual_str = f"{actual:g}{tgt['unit']}"
+        recs.append({
+            "title": f"Drift: {tgt['label']} is {actual_str} (target {tgt['raw']})"[:80],
+            "body": (
+                f"CLAUDE.md target '{tgt['label']}' over {tgt['window']} is {tgt['raw']}; "
+                f"telemetry measures {actual_str}. Deterministic local check, no model involved."
+            )[:500],
+            "evidence_sql": " ".join(sql.split()),  # full SQL — must stay runnable
+            "confidence": 1.0,
+            "tier": "high" if drift_score >= 0.5 else "medium",
+            "rule_ref": f"CLAUDE.md:{rid}",
+            "expected": f"{tgt['label']} {tgt['raw']}"[:300],
+            "actual": actual_str[:120],
+            "drift_score": drift_score,
+        })
+    recs.sort(key=lambda r: r["drift_score"], reverse=True)
+    return recs
 
 
 # ---------------------------------------------------------------- code ---
@@ -366,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
         "recs_generated": 0,
         "recs_after_filter": 0,
         "filter_would_reject_count": 0,
+        "drift_findings": 0,
         "error": None,
     }
 
@@ -386,8 +537,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[SUGGESTIONS] ERROR query: {e}", file=sys.stderr)
             return 1
 
+        # Drift is computed locally (no model) — safe to show in dry-run.
+        drift_recs = compute_drift(conn, CLAUDE_MD_FILE)
+        log_entry["drift_findings"] = len(drift_recs)
+
         if args.dry_run:
             print(json.dumps(results, indent=2, default=str))
+            print("\n" + "=" * 60, file=sys.stderr)
+            print(f"DRIFT FINDINGS ({len(drift_recs)}) — computed locally, nothing sent to any model:",
+                  file=sys.stderr)
+            print("=" * 60, file=sys.stderr)
+            for r in drift_recs:
+                print(f"  [{r['drift_score']:.2f}] {r['rule_ref']}: "
+                      f"expected {r['expected']!r} / actual {r['actual']!r}", file=sys.stderr)
+            if not drift_recs:
+                print("  (none — all declared CLAUDE.md targets are within threshold, "
+                      "or no data in window)", file=sys.stderr)
             return 0
 
         prompt = build_prompt(results)
@@ -420,16 +585,20 @@ def main(argv: list[str] | None = None) -> int:
         log_entry["cost_usd"] = cc.get("cost_usd")
         log_entry["duration_s"] = round((dt.datetime.now(dt.UTC) - start).total_seconds(), 2)
 
+        # Drift recs lead (deterministic, high-signal), then model observations.
+        all_recs = drift_recs + validated
+
         out = {
             "schema_version": 1,
             "generated_at": _utc_now_iso(),
             "generator_model": model_name or "claude-haiku",
             "notes": notes,
-            "recommendations": validated,
+            "recommendations": all_recs,
         }
         atomic_write_json(out, OUTPUT_FILE)
         append_log_line(log_entry, LOG_FILE)
-        print(f"[SUGGESTIONS] wrote {len(validated)} recs to {OUTPUT_FILE}")
+        print(f"[SUGGESTIONS] wrote {len(all_recs)} recs "
+              f"({len(drift_recs)} drift + {len(validated)} model) to {OUTPUT_FILE}")
         return 0
     finally:
         conn.close()
