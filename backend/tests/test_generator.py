@@ -146,6 +146,21 @@ def test_compute_drift_no_targets_table_is_empty(tmp_path):
     assert gen.compute_drift(conn, tmp_path / "absent.md") == []
 
 
+def test_validate_recs_drops_runaway_query(monkeypatch):
+    # A model-authored evidence_sql that runs away must be interrupted and dropped,
+    # never hang the run. Keep the watchdog short so the test is fast.
+    monkeypatch.setattr(gen, "EVIDENCE_SQL_TIMEOUT_S", 1)
+    conn = _seed_db()
+    slow = ("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL "
+            "SELECT x+1 FROM c WHERE x<100000000) SELECT count(*) FROM c")
+    out = gen.validate_recs(
+        [{"title": "runaway", "evidence_sql": slow},
+         {"title": "ok", "evidence_sql": "SELECT 1"}],
+        conn,
+    )
+    assert [r["title"] for r in out] == ["ok"]
+
+
 # ---------------------------------------------------------------- privacy / safety
 def test_no_query_touches_input_preview():
     for sql in gen.ALLOWED_QUERIES.values():

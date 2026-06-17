@@ -31,6 +31,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 # ---------------------------------------------------------------- paths --
@@ -41,8 +42,11 @@ OUTPUT_FILE = DATA_DIR / "recommendations.json"
 LOG_FILE = DATA_DIR / "generator.log"
 
 # ---------------------------------------------------------------- CLI ----
-CLAUDE_PATH = shutil.which("claude") or "claude"
-TIMEOUT_S = 120
+# CLAUDE_BIN lets headless runners (systemd) point at a concrete binary when the
+# `claude` shim can't resolve a version without an active shell (e.g. mise shims).
+CLAUDE_PATH = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
+TIMEOUT_S = 150  # cold headless `claude -p` (cache creation + multi-turn) can exceed 120s; stay under the service's 180s hard limit
+EVIDENCE_SQL_TIMEOUT_S = 5  # per model-authored evidence_sql; a runaway query must not hang the run
 MAX_BUDGET_USD = 0.15
 MODEL = "haiku"
 FALLBACK_MODEL = "sonnet"
@@ -474,11 +478,18 @@ def validate_recs(recs: list[dict], conn: sqlite3.Connection) -> list[dict]:
         if leading not in ("SELECT", "WITH"):
             print(f"[SUGGESTIONS] dropped rec (non-SELECT evidence_sql): {rec.get('title')}", file=sys.stderr)
             continue
+        # Model-authored SQL — guard against a runaway query hanging the whole
+        # run. A timer fires conn.interrupt(), which raises sqlite3.OperationalError
+        # (a sqlite3.Error) and drops the offending rec.
+        watchdog = threading.Timer(EVIDENCE_SQL_TIMEOUT_S, conn.interrupt)
+        watchdog.start()
         try:
             conn.execute(sql).fetchmany(1)
         except sqlite3.Error as e:
             print(f"[SUGGESTIONS] dropped rec (SQL error: {e}): {rec.get('title')}", file=sys.stderr)
             continue
+        finally:
+            watchdog.cancel()
         out.append(rec)
     return out
 

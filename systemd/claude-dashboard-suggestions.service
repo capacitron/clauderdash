@@ -8,6 +8,9 @@ Wants=network-online.target
 Type=oneshot
 # Systemd user services do NOT source .bashrc — raw mise shim needed in PATH
 Environment="PATH=/home/capacitron/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
+# If the `claude` shim won't resolve headless (mise: "No version is set for shim"),
+# uncomment and point CLAUDE_BIN at the concrete binary, e.g.:
+# Environment="CLAUDE_BIN=%h/.local/share/mise/installs/node/25.0.0/bin/claude"
 Environment="CLAUDE_DASHBOARD_DATA_DIR=__PROJECT_DIR__/data"
 WorkingDirectory=__PROJECT_DIR__
 ExecStart=__PROJECT_DIR__/backend/.venv/bin/python __PROJECT_DIR__/scripts/generate_recommendations.py
