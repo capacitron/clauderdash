@@ -13,6 +13,11 @@ type Rec = {
   evidence_sql: string;
   confidence: number;
   tier: Tier;
+  // Optional drift-engine fields (present only on deterministic drift recs).
+  rule_ref?: string | null;
+  expected?: string | null;
+  actual?: string | null;
+  drift_score?: number | null;
 };
 
 type Resp = {
@@ -71,6 +76,19 @@ export function SuggestionBox() {
                     {rec.tier}
                   </span>
                 </div>
+                {rec.rule_ref && (
+                  <div className="mb-2 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-wider">
+                    <span className="chip flex-shrink-0 border border-accent-orange/50 bg-accent-orange/10 text-accent-orange">
+                      rule drift
+                    </span>
+                    {rec.expected && rec.actual && (
+                      <span className="normal-case tracking-normal text-text-subtle">
+                        expected <span className="text-text-dim">{rec.expected}</span>
+                        {" · "}actual <span className="text-accent-red">{rec.actual}</span>
+                      </span>
+                    )}
+                  </div>
+                )}
                 <p className="mb-2 text-xs leading-relaxed text-text-dim">
                   {rec.body}
                 </p>
