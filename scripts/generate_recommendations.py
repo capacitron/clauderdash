@@ -352,7 +352,7 @@ def compute_drift(conn: sqlite3.Connection, claude_md: Path) -> list[dict]:
                 f"CLAUDE.md target '{tgt['label']}' over {tgt['window']} is {tgt['raw']}; "
                 f"telemetry measures {actual_str}. Deterministic local check, no model involved."
             )[:500],
-            "evidence_sql": " ".join(sql.split())[:300],
+            "evidence_sql": " ".join(sql.split()),  # full SQL — must stay runnable
             "confidence": 1.0,
             "tier": "high" if drift_score >= 0.5 else "medium",
             "rule_ref": f"CLAUDE.md:{rid}",
