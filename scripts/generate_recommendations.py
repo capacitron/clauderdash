@@ -110,24 +110,6 @@ ALLOWED_QUERIES: dict[str, str] = {
       ORDER BY invocations DESC
          LIMIT 15
     """,
-    # Skill ROI (O4). NOTE: token attribution is SESSION-LEVEL — skill_invocations
-    # has no token column, so tokens reflect the whole session a skill ran in,
-    # not the skill itself. A session running 3 skills attributes its tokens to all 3.
-    "skill_roi": """
-        SELECT si.skill_name,
-               COUNT(*) AS invocations,
-               COUNT(DISTINCT si.session_id) AS sessions,
-               COALESCE(SUM(m.input_tokens + m.output_tokens
-                            + m.cache_read_tokens + m.cache_create_tokens), 0) AS session_tokens_attr,
-               SUM(CASE WHEN s.outcome = 'errored' THEN 1 ELSE 0 END) AS errored_sessions
-          FROM skill_invocations si
-          JOIN sessions s ON s.id = si.session_id
-          LEFT JOIN messages m ON m.session_id = si.session_id AND m.role = 'assistant'
-         WHERE si.ts >= datetime('now', '-30 days')
-      GROUP BY si.skill_name
-      ORDER BY session_tokens_attr DESC
-         LIMIT 15
-    """,
     "session_outcomes_30d": """
         SELECT substr(started_at, 1, 10) AS day,
                outcome,

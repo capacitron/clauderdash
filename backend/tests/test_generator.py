@@ -147,10 +147,6 @@ def test_compute_drift_no_targets_table_is_empty(tmp_path):
 
 
 # ---------------------------------------------------------------- privacy / safety
-def test_skill_roi_query_has_no_input_preview():
-    assert "input_preview" not in gen.ALLOWED_QUERIES["skill_roi"]
-
-
 def test_no_query_touches_input_preview():
     for sql in gen.ALLOWED_QUERIES.values():
         assert "input_preview" not in sql
