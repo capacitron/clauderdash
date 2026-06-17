@@ -167,6 +167,27 @@ cat data/recommendations.json | python3 -m json.tool
 
 Refresh the dashboard — the SUGGESTIONS panel populates.
 
+### Drift engine (local, no network)
+
+The same run also performs **intent-vs-behavior drift detection**, computed entirely **locally** — no part of it is sent to any model.
+
+It reads a `## Measurable Targets (Drift-Checked)` pipe table from your `CLAUDE.md` (override path with `CLAUDE_DRIFT_RULES_FILE`), runs each declared target's read-only SQL against `dashboard.db`, and compares actual telemetry to the threshold *you* set in the table. Any breach becomes a high-signal rec (with `rule_ref` / `expected` / `actual` / `drift_score`) prepended to `recommendations.json` and shown with a **RULE DRIFT** badge on the panel.
+
+Declare a target by adding a row:
+
+```markdown
+## Measurable Targets (Drift-Checked)
+
+| id | Target | Window | Threshold |
+|----|--------|--------|-----------|
+| opus_share | Opus share of total tokens | 30d | < 20% |
+| cache_hit  | Prompt cache hit rate      | 30d | >= 70% |
+```
+
+A target is checked only if its `id` exists in **both** the table and `RULE_CHECKS` in `generate_recommendations.py` (built-in ids: `opus_share`, `cache_hit`, `fail_rate`, `repeat_err`, `web_err`). The table is authoritative for thresholds — tune freely without touching code. `--dry-run` prints all drift findings to stderr (nothing sent anywhere), so you can audit before enabling the timer.
+
+> Note: this is a *deterministic numeric-rule* checker — it catches measurable threshold rules (Opus %, cache %, error rates), not prose rules. Drift uses zero outbound network; only the separate `claude -p` observation pass (above) reaches the API.
+
 ### Enable weekly timer (Sundays at 09:00)
 
 ```bash
