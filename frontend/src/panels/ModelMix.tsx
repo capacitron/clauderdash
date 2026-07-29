@@ -17,15 +17,21 @@ import { Skeleton, EmptyState } from "../components/Skeleton";
 
 type FamilyTotals = Record<string, number>;
 
+type PremiumBreakdown = {
+  cost_usd: number;
+  cost_share: number;
+  target_max: number;
+};
+
 type Resp = {
   families: string[];
   premium_families: string[];
+  premium_breakdown: Record<string, PremiumBreakdown>;
   series: (FamilyTotals & { day: string })[];
   totals: FamilyTotals;
   total_cost_usd: number;
   premium_cost_usd: number;
   premium_cost_share: number;
-  premium_target_max: number;
 };
 
 const FAMILY_COLORS: Record<string, string> = {
@@ -57,23 +63,19 @@ export function ModelMix() {
     apiGet<Resp>(`/api/models?range=${range}`).then(setData).catch(() => setData(null));
   }, [range]);
 
-  const over = data && data.premium_cost_share > data.premium_target_max;
-  const tone = !data
-    ? "text-text"
-    : over
-    ? "text-accent-red"
-    : data.premium_cost_share > data.premium_target_max * 0.75
-    ? "text-accent-orange"
-    : "text-accent-green";
+  function toneFor(share: number, target: number): string {
+    if (share > target) return "text-accent-red";
+    if (share > target * 0.75) return "text-accent-orange";
+    return "text-accent-green";
+  }
 
   function narrative(share: number, target: number): string {
-    // target arrives as a fraction; render it as a percentage.
     const targetPct = (target * 100).toFixed(0);
     const mult = (share / target).toFixed(1);
     if (share > target)
-      return `${mult}× over the ${targetPct}% target — Sonnet handles most tasks at a fraction of the cost.`;
-    if (share > target * 0.75) return `Close to the ${targetPct}% target. Watch for upward drift.`;
-    return `Well within the ${targetPct}% target. Model mix is healthy.`;
+      return `${mult}× over its ${targetPct}% target — Sonnet handles most tasks at a fraction of the cost.`;
+    if (share > target * 0.75) return `Close to its ${targetPct}% target.`;
+    return `Well within its ${targetPct}% target.`;
   }
 
   // Only chart families that actually appear — an empty `unknown` bucket would
@@ -88,7 +90,9 @@ export function ModelMix() {
       title="Model mix"
       subtitle={
         data
-          ? `Premium (${data.premium_families.map(titleCase).join(" + ")}) target ≤ ${(data.premium_target_max * 100).toFixed(0)}% of spend`
+          ? data.premium_families
+              .map((f) => `${titleCase(f)} ≤ ${(data.premium_breakdown[f].target_max * 100).toFixed(0)}%`)
+              .join(" · ") + " of spend"
           : "Premium model spend share"
       }
       action={<RangeToggle value={range} onChange={setRange} />}
@@ -102,22 +106,43 @@ export function ModelMix() {
           <div className="mb-3">
             <div className="flex items-baseline gap-4">
               <div>
-                <div className={clsx("stat-num", tone)}>{pct(data.premium_cost_share, 1)}</div>
-                <div className="kicker">Premium spend share</div>
+                <div className="stat-num text-text">{pct(data.premium_cost_share, 1)}</div>
+                <div className="kicker">Combined premium spend</div>
               </div>
-              {over && (
-                <span className="chip bg-accent-red/10 text-accent-red">Over target</span>
+              {data.total_cost_usd > 0 && (
+                <div className="font-mono text-xs text-accent-cyan">
+                  {fmtCost(data.premium_cost_usd)} of {fmtCost(data.total_cost_usd)} this period
+                </div>
               )}
             </div>
-            <p className="stat-narrative">
-              {narrative(data.premium_cost_share, data.premium_target_max)}
-            </p>
-            {data.total_cost_usd > 0 && (
-              <div className="mt-1 font-mono text-xs text-accent-cyan">
-                {fmtCost(data.premium_cost_usd)} premium of {fmtCost(data.total_cost_usd)} this period
-              </div>
-            )}
-            <div className="mt-2 flex flex-wrap gap-2">
+
+            {/* Each premium family has its own ceiling — Fable (~5x Sonnet's
+                price) and Opus (~2.5x) don't share one target anymore, so
+                compliance is reported per family, not as one blended number. */}
+            <div className="mt-2.5 flex flex-col gap-2">
+              {data.premium_families.map((fam) => {
+                const b = data.premium_breakdown[fam];
+                if (!b) return null;
+                const over = b.cost_share > b.target_max;
+                return (
+                  <div key={fam} className="rounded-lg border border-border bg-surface-2/40 p-2.5">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="font-mono text-xs font-medium text-text">
+                        {titleCase(fam)} <span className={clsx("font-semibold", toneFor(b.cost_share, b.target_max))}>{pct(b.cost_share, 1)}</span>
+                      </span>
+                      {over && (
+                        <span className="chip bg-accent-red/10 text-accent-red">Over target</span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] leading-snug text-text-dim">
+                      {narrative(b.cost_share, b.target_max)}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-2.5 flex flex-wrap gap-2">
               {activeFamilies.map((f) => (
                 <span key={f} className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-text-dim">
                   <span

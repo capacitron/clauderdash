@@ -87,8 +87,12 @@ def test_agent_usage_cost_share_is_relative_to_all_spend(attributed_messages) ->
     data = r.json()
     by_type = {a["agent_type"]: a for a in data["agents"]}
     explore = by_type["Explore"]
+    # abs, not rel: cost_usd and total_cost_usd are both rounded to 4dp before
+    # being returned, so recomputing the ratio from them only approximates the
+    # unrounded cost_share the endpoint actually returns — a tight relative
+    # tolerance flakes whenever DEV_MODE's randomised fixture total is small.
     assert explore["cost_share"] == pytest.approx(
-        explore["cost_usd"] / data["total_cost_usd"], rel=1e-6
+        explore["cost_usd"] / data["total_cost_usd"], abs=1e-4
     )
     # Sanity: with the $1 main-loop message counted in the denominator,
     # Explore's $2 must be strictly less than 2/3 (its share of subagent-only

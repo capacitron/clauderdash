@@ -40,9 +40,10 @@ def _seed_db() -> sqlite3.Connection:
         """
     )
     now = "datetime('now')"
-    # Premium spend is $6 of $8 (75%) → premium_share should breach <20%.
-    # Fable is in the premium set too, so it gets a row: a check that only
-    # matched '%opus%' would score this 50% and pass the 75% case by luck.
+    # $8 total: opus $4 (50%), fable $2 (25%), haiku $2. Fable and Opus now
+    # have separate targets (10% / 30%) instead of one combined one, so both
+    # rows are needed to exercise fable_cost_share and opus_cost_share
+    # independently — each breaches its own new threshold.
     conn.execute(
         f"INSERT INTO messages VALUES ('s1','assistant','claude-opus-4-8',{now},"
         "4000,0,0,0,4.0)"
@@ -72,13 +73,13 @@ def _write_targets_table(tmp_path: Path, body: str) -> Path:
 def test_parse_drift_targets_reads_table(tmp_path):
     f = _write_targets_table(
         tmp_path,
-        "| premium_share | Premium share | 30d | < 20% |\n"
+        "| fable_cost_share | Fable share | 30d | < 10% |\n"
         "| cache_hit | Cache hit | 30d | >= 70% |\n",
     )
     targets = gen.parse_drift_targets(f)
-    assert set(targets) == {"premium_share", "cache_hit"}
-    assert targets["premium_share"]["op"] == "<"
-    assert targets["premium_share"]["threshold"] == 20.0
+    assert set(targets) == {"fable_cost_share", "cache_hit"}
+    assert targets["fable_cost_share"]["op"] == "<"
+    assert targets["fable_cost_share"]["threshold"] == 10.0
     assert targets["cache_hit"]["op"] == ">="
 
 
@@ -93,10 +94,10 @@ def test_parse_drift_targets_ignores_other_sections(tmp_path):
         "## Measurable Targets (Drift-Checked)\n\n"
         "| id | Target | Window | Threshold |\n"
         "|----|--------|--------|-----------|\n"
-        "| premium_share | Premium | 30d | < 20% |\n"
+        "| fable_cost_share | Fable | 30d | < 10% |\n"
     )
     targets = gen.parse_drift_targets(f)
-    assert list(targets) == ["premium_share"]
+    assert list(targets) == ["fable_cost_share"]
 
 
 # ---------------------------------------------------------------- satisfies
@@ -110,26 +111,40 @@ def test_satisfies(actual, op, thr, ok):
 
 
 # ---------------------------------------------------------------- compute
-def test_compute_drift_flags_premium_overspend(tmp_path):
+def test_compute_drift_flags_fable_and_opus_independently(tmp_path):
+    """Both rows declared → both breach, each against its OWN threshold —
+    the whole point of splitting one combined check into two."""
     conn = _seed_db()
-    f = _write_targets_table(tmp_path, "| premium_share | Premium share | 30d | < 20% |\n")
-    recs = gen.compute_drift(conn, f)
-    assert len(recs) == 1
-    r = recs[0]
-    assert r["rule_ref"] == "CLAUDE.md:premium_share"
-    assert r["actual"] == "75%"           # $6 premium of $8 total
-    assert r["drift_score"] == 1.0
-    assert r["tier"] == "high"
-    assert r["confidence"] == 1.0
-    # evidence_sql must be a runnable SELECT
-    assert r["evidence_sql"].lstrip().upper().startswith("SELECT")
-    conn.execute(r["evidence_sql"]).fetchone()
+    f = _write_targets_table(
+        tmp_path,
+        "| fable_cost_share | Fable share | 30d | < 10% |\n"
+        "| opus_cost_share | Opus share | 30d | < 30% |\n",
+    )
+    recs = {r["rule_ref"]: r for r in gen.compute_drift(conn, f)}
+    assert set(recs) == {"CLAUDE.md:fable_cost_share", "CLAUDE.md:opus_cost_share"}
+
+    fable = recs["CLAUDE.md:fable_cost_share"]
+    assert fable["actual"] == "25%"       # $2 fable of $8 total
+    assert fable["drift_score"] == 1.0
+    assert fable["tier"] == "high"
+    assert fable["evidence_sql"].lstrip().upper().startswith("SELECT")
+    conn.execute(fable["evidence_sql"]).fetchone()
+
+    opus = recs["CLAUDE.md:opus_cost_share"]
+    assert opus["actual"] == "50%"        # $4 opus of $8 total
+    # drift_score = clamp((actual - threshold) / threshold, 0, 1) = (50-30)/30
+    assert opus["drift_score"] == pytest.approx(0.67, abs=0.01)
+    assert opus["tier"] == "high"         # >= 0.5
 
 
 def test_compute_drift_silent_when_compliant(tmp_path):
     conn = _seed_db()
-    # Threshold raised above the measured 75% → compliant → no drift
-    f = _write_targets_table(tmp_path, "| premium_share | Premium share | 30d | < 90% |\n")
+    # Thresholds raised above the measured 25%/50% → compliant → no drift
+    f = _write_targets_table(
+        tmp_path,
+        "| fable_cost_share | Fable share | 30d | < 90% |\n"
+        "| opus_cost_share | Opus share | 30d | < 90% |\n",
+    )
     assert gen.compute_drift(conn, f) == []
 
 
@@ -141,11 +156,14 @@ def test_compute_drift_null_actual_skipped(tmp_path):
 
 
 def test_compute_drift_only_declared_rules_run(tmp_path):
-    conn = _seed_db()  # premium data present
-    # premium_share NOT declared → not checked even though data would breach it
+    conn = _seed_db()  # fable/opus data present
+    # Neither cost-share id declared → not checked even though data breaches both
     f = _write_targets_table(tmp_path, "| fail_rate | Fail rate | 30d | < 10% |\n")
     recs = gen.compute_drift(conn, f)
-    assert all(r["rule_ref"] != "CLAUDE.md:premium_share" for r in recs)
+    assert all(
+        r["rule_ref"] not in ("CLAUDE.md:fable_cost_share", "CLAUDE.md:opus_cost_share")
+        for r in recs
+    )
 
 
 def test_compute_drift_no_targets_table_is_empty(tmp_path):

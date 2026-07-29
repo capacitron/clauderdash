@@ -5,11 +5,16 @@ export type GaugeData = {
   burn:       { value: number; today_usd: number; avg_usd: number };
   discipline: {
     value: number;
+    worst_family: string;
+    worst_ratio: number;
     premium_cost_pct: number;
     premium_token_pct: number;
     premium_cost_usd: number;
-    target_max: number;
     families: string[];
+    family_compliance: Record<
+      string,
+      { cost_pct: number; cost_usd: number; target_max: number; ratio: number }
+    >;
     by_family_cost: Record<string, number>;
   };
   efficiency: { value: number; hit_rate: number };

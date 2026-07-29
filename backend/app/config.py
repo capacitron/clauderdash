@@ -58,12 +58,20 @@ MODEL_FAMILIES = {
 # order list would KeyError the bucket dicts in /api/models.
 MODEL_FAMILY_ORDER = [*MODEL_FAMILIES, "unknown"]
 
-# Families billed at premium rates. The discipline gauge tracks their share of
-# *spend*, not of token count — model prices move (Opus 5 costs a third of
-# Opus 4.7; Fable 5 is now the top tier), so a per-model token target goes
-# stale every launch while a cost-weighted one does not.
-PREMIUM_FAMILIES = ("fable", "opus")
-PREMIUM_COST_SHARE_TARGET = 0.20
+# Premium families each get their OWN spend-share ceiling, not one shared cap.
+# A single combined target stops making sense once the premium tier has two
+# models at different price multiples over Sonnet: Fable 5 ($10/$50) is still
+# ~5x Sonnet 5's price, the ratio Opus used to sit at, while Opus 5 ($5/$25)
+# dropped to ~2.5x after its own price cut. Lumping them under one 20% cap
+# treated both as equally worth avoiding, which stopped being true the moment
+# Opus got cheaper — a cap tuned for a 5x multiplier is too strict for a 2.5x
+# one. Tracks share of *spend*, not token count, so a price change alone
+# doesn't force a threshold retune the way a token-share target would.
+PREMIUM_TARGETS: dict[str, float] = {
+    "fable": 0.10,
+    "opus": 0.30,
+}
+PREMIUM_FAMILIES = tuple(PREMIUM_TARGETS)
 
 # v2 panels ------------------------------------------------------------------
 

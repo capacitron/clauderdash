@@ -91,14 +91,18 @@ export default function App() {
 
   const gd = gaugeData;
 
-  // Amber band starts at the target the backend reports, so retuning
-  // PREMIUM_COST_SHARE_TARGET moves the gauge colours with it.
-  const targetPct = (gd?.discipline.target_max ?? 0.2) * 100;
+  // Fable and Opus each have their own spend-share ceiling now, so the gauge
+  // value isn't a raw percentage anymore — the backend already normalises it
+  // to "ratio of whichever premium family is closest to its own cap" (1.0 =
+  // exactly at cap → 50 on the arc, 1.75x → 87.5). The zone bounds are a
+  // fixed convention on that ratio, not a target pulled from the API.
   const disciplineZone = {
-    t1: targetPct,
-    t2: targetPct * 1.75,
+    t1: 50,
+    t2: 87.5,
     colors: ["green", "amber", "red"] as const,
   };
+  const worstFamily = gd?.discipline.worst_family;
+  const worstCompliance = worstFamily ? gd?.discipline.family_compliance[worstFamily] : undefined;
 
   return (
     <div className="min-h-screen px-6 py-6 xl:px-10 xl:py-8">
@@ -161,8 +165,16 @@ export default function App() {
           kicker="02 · DISCIPLINE"
           label="Discipline"
           value={gd?.discipline.value ?? 50}
-          statDisplay={`${(gd?.discipline.premium_cost_pct ?? 0) * 100 < 1 ? "<1" : ((gd?.discipline.premium_cost_pct ?? 0) * 100).toFixed(0)}%`}
-          detail="premium spend · 30d"
+          statDisplay={
+            worstCompliance
+              ? `${worstCompliance.cost_pct * 100 < 1 ? "<1" : (worstCompliance.cost_pct * 100).toFixed(0)}%`
+              : "—"
+          }
+          detail={
+            worstFamily && worstCompliance
+              ? `${worstFamily} vs ${(worstCompliance.target_max * 100).toFixed(0)}% cap`
+              : "premium spend · 30d"
+          }
           zone={disciplineZone}
           active={gauge === "discipline"}
           onClick={() => toggleGauge("discipline")}

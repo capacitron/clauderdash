@@ -219,13 +219,21 @@ Respond with a JSON object matching the provided schema exactly. No prose outsid
 # no data in window). Thresholds come from the CLAUDE.md table, not here —
 # this file stays authoritative for the numbers. The `id` keys link them.
 RULE_CHECKS: dict[str, str] = {
-    # Premium = Fable + Opus, measured on spend rather than tokens. Token share
-    # stopped tracking intent once Opus 5 landed at a third of Opus 4.7's price
-    # and Fable 5 took the top tier above it.
-    "premium_share": """
+    # Fable and Opus get separate checks, each on spend rather than tokens.
+    # They used to share one "premium_share" threshold, but Fable (~5x
+    # Sonnet's price) and Opus (~2.5x, after its own price cut) warrant
+    # different ceilings — one combined check either let the cheaper model
+    # run wild or capped it at the pricier one's limit.
+    "fable_cost_share": """
         SELECT ROUND(100.0 *
-          COALESCE(SUM(CASE WHEN model LIKE '%opus%' OR model LIKE '%fable%'
-            THEN cost_usd END), 0)
+          COALESCE(SUM(CASE WHEN model LIKE '%fable%' THEN cost_usd END), 0)
+          / NULLIF(SUM(cost_usd), 0), 1) AS actual
+          FROM messages
+         WHERE role='assistant' AND ts >= datetime('now','-30 days')
+    """,
+    "opus_cost_share": """
+        SELECT ROUND(100.0 *
+          COALESCE(SUM(CASE WHEN model LIKE '%opus%' THEN cost_usd END), 0)
           / NULLIF(SUM(cost_usd), 0), 1) AS actual
           FROM messages
          WHERE role='assistant' AND ts >= datetime('now','-30 days')

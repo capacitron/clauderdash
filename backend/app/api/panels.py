@@ -22,8 +22,8 @@ from ..config import (
     LIVE_WINDOW_SECONDS,
     MODEL_FAMILIES,
     MODEL_FAMILY_ORDER,
-    PREMIUM_COST_SHARE_TARGET,
     PREMIUM_FAMILIES,
+    PREMIUM_TARGETS,
     PROJECT_TAG_RULES,
     SUGGESTIONS_FILE,
 )
@@ -602,17 +602,28 @@ def model_mix(range: str = Query("7d")) -> dict[str, Any]:
     grand_total = sum(totals[f] for f in MODEL_FAMILY_ORDER) or 1
     total_cost = sum(totals[f"{f}_cost"] for f in MODEL_FAMILY_ORDER)
     premium_cost = sum(totals[f"{f}_cost"] for f in PREMIUM_FAMILIES)
+    # Each premium family has its own ceiling (Fable and Opus sit at different
+    # multiples over Sonnet's price), so alongside the combined figure the
+    # frontend needs a per-family breakdown to say which one, if any, is over.
+    premium_breakdown = {
+        fam: {
+            "cost_usd": round(totals[f"{fam}_cost"], 4),
+            "cost_share": (totals[f"{fam}_cost"] / total_cost) if total_cost else 0.0,
+            "target_max": PREMIUM_TARGETS[fam],
+        }
+        for fam in PREMIUM_FAMILIES
+    }
     return {
         "range": range,
         "days": days,
         "families": MODEL_FAMILY_ORDER,
         "premium_families": list(PREMIUM_FAMILIES),
+        "premium_breakdown": premium_breakdown,
         "series": series,
         "totals": totals,
         "total_cost_usd": total_cost,
         "premium_cost_usd": premium_cost,
         "premium_cost_share": premium_cost / total_cost if total_cost else 0.0,
-        "premium_target_max": PREMIUM_COST_SHARE_TARGET,
         # Token share per family, kept for the mix chart's percentage labels.
         **{f"{fam}_pct_overall": totals[fam] / grand_total for fam in MODEL_FAMILY_ORDER},
     }
@@ -808,9 +819,10 @@ def gauge_data() -> dict[str, Any]:
         avg_30d = sum(float(r["c"]) for r in day_costs) / 30.0 if day_costs else 0.0
         burn_value = round(min(100.0, (today_cost / avg_30d) * 50.0), 1) if avg_30d > 0 else 50.0
 
-        # Discipline: premium-model share of *spend* over 30d. Token share was
-        # the old measure and it lied once Opus got cheap and Fable arrived
-        # above it — cost is what the target actually cares about.
+        # Discipline: each premium family checked against its OWN spend-share
+        # ceiling, not a combined one — Fable and Opus sit at different price
+        # multiples over Sonnet, so one shared target either lets the cheaper
+        # one run wild or unfairly caps it at the pricier one's limit.
         model_rows = cur.execute(
             """SELECT model,
                       COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_create_tokens),0) AS t,
@@ -820,13 +832,32 @@ def gauge_data() -> dict[str, Any]:
         ).fetchall()
         total_t = sum(int(r["t"] or 0) for r in model_rows) or 1
         total_c = sum(float(r["c"] or 0) for r in model_rows)
-        premium_rows = [r for r in model_rows if _classify_model(r["model"]) in PREMIUM_FAMILIES]
-        premium_c = sum(float(r["c"] or 0) for r in premium_rows)
-        premium_t = sum(int(r["t"] or 0) for r in premium_rows)
-        premium_pct = premium_c / total_c if total_c else 0.0
         by_family_cost: dict[str, float] = defaultdict(float)
+        by_family_tokens: dict[str, int] = defaultdict(int)
         for r in model_rows:
-            by_family_cost[_classify_model(r["model"])] += float(r["c"] or 0)
+            fam = _classify_model(r["model"])
+            by_family_cost[fam] += float(r["c"] or 0)
+            by_family_tokens[fam] += int(r["t"] or 0)
+
+        premium_c = sum(by_family_cost[f] for f in PREMIUM_FAMILIES)
+        premium_t = sum(by_family_tokens[f] for f in PREMIUM_FAMILIES)
+        premium_pct = premium_c / total_c if total_c else 0.0
+
+        # Compliance ratio per family = its spend share ÷ its own cap. The
+        # worst (highest) ratio drives the gauge — either family alone busting
+        # its ceiling should read as non-compliant, not get averaged away.
+        family_compliance = {}
+        for fam in PREMIUM_FAMILIES:
+            fam_pct = (by_family_cost[fam] / total_c) if total_c else 0.0
+            target = PREMIUM_TARGETS[fam]
+            family_compliance[fam] = {
+                "cost_pct": round(fam_pct, 4),
+                "cost_usd": round(by_family_cost[fam], 3),
+                "target_max": target,
+                "ratio": round(fam_pct / target, 3) if target else 0.0,
+            }
+        worst_family = max(family_compliance, key=lambda f: family_compliance[f]["ratio"])
+        worst_ratio = family_compliance[worst_family]["ratio"]
 
         # Efficiency: cache hit rate 30d
         cr = cur.execute(
@@ -857,12 +888,19 @@ def gauge_data() -> dict[str, Any]:
     return {
         "burn":        {"value": burn_value,          "today_usd": round(today_cost, 3), "avg_usd": round(avg_30d, 3)},
         "discipline":  {
-            "value": round(premium_pct * 100, 1),
+            # Gauge needle position: ratio 1.0 (exactly at the worse family's
+            # own cap) maps to 50 on the 0-100 arc, 1.75x maps to 87.5 — same
+            # "amber starts at cap, red at 1.75x" convention the panels used
+            # under the old single-target version, just driven by a ratio
+            # instead of a raw percentage now that there are two ceilings.
+            "value": round(min(100.0, worst_ratio * 50), 1),
+            "worst_family": worst_family,
+            "worst_ratio": worst_ratio,
             "premium_cost_pct": round(premium_pct, 4),
             "premium_token_pct": round(premium_t / total_t, 4),
             "premium_cost_usd": round(premium_c, 3),
-            "target_max": PREMIUM_COST_SHARE_TARGET,
             "families": list(PREMIUM_FAMILIES),
+            "family_compliance": family_compliance,
             "by_family_cost": {k: round(v, 3) for k, v in sorted(by_family_cost.items())},
         },
         "efficiency":  {"value": round(hit_rate*100, 1), "hit_rate": round(hit_rate, 4)},
@@ -1665,37 +1703,45 @@ def intelligence() -> dict[str, Any]:
                 "severity": "medium",
             })
 
-        # 3 — Premium (Fable + Opus) spend vs target (7-day window). Message
-        # count was the old measure: it treated one Fable reply and one Haiku
-        # reply as equal weight, and did not know Fable existed at all.
+        # 3 — Premium spend vs target, checked PER FAMILY (7-day window). One
+        # shared cap stopped making sense once Fable (~5x Sonnet's price) and
+        # Opus (~2.5x, after its own price cut) needed different ceilings —
+        # looping PREMIUM_TARGETS means a third premium tier just needs a
+        # config entry, not a new block here.
         cur.execute(
             """
-            SELECT ROUND(100.0 * COALESCE(SUM(CASE WHEN model LIKE '%opus%' OR model LIKE '%fable%'
-                                               THEN cost_usd END), 0)
-                / NULLIF(SUM(cost_usd), 0), 1) AS premium_pct
+            SELECT model, COALESCE(SUM(cost_usd), 0) AS cost
               FROM messages
              WHERE role='assistant' AND ts >= datetime('now', '-7 days')
+          GROUP BY model
             """
         )
-        row = cur.fetchone()
-        target_pct = PREMIUM_COST_SHARE_TARGET * 100
-        if row and row["premium_pct"] is not None:
-            premium_pct = row["premium_pct"]
-            multiplier = round(premium_pct / target_pct, 1)
-            if premium_pct > target_pct * 1.25:
-                sev = "high" if premium_pct > target_pct * 2 else "medium"
+        week_rows = cur.fetchall()
+        week_total = sum(float(r["cost"] or 0) for r in week_rows)
+        for fam, target in PREMIUM_TARGETS.items():
+            if week_total <= 0:
+                break
+            fam_cost = sum(
+                float(r["cost"] or 0) for r in week_rows if _classify_model(r["model"]) == fam
+            )
+            fam_pct = round(100 * fam_cost / week_total, 1)
+            target_pct = target * 100
+            if fam_pct > target_pct * 1.25:
+                multiplier = round(fam_pct / target_pct, 1)
+                sev = "high" if fam_pct > target_pct * 2 else "medium"
                 recommendations.append({
-                    "id": "premium-over-target",
-                    "title": f"Premium models at {premium_pct}% of spend — target is {target_pct:.0f}%",
-                    "body": f"{multiplier}× over target this week. Sonnet handles most implementation work at a fraction of the cost. Switch for feature work; keep Fable and Opus for architecture.",
-                    "action": "Use Sonnet for implementation sessions — /model sonnet",
+                    "id": f"{fam}-over-target",
+                    "title": f"{fam.title()} at {fam_pct}% of spend — target is {target_pct:.0f}%",
+                    "body": f"{multiplier}× over its {target_pct:.0f}% target this week. Sonnet handles most implementation work at a fraction of the cost.",
+                    "action": f"Use Sonnet for implementation sessions — /model sonnet" if fam != "opus"
+                    else "Reserve Opus for architecture/debugging, Sonnet for implementation — /model sonnet",
                     "severity": sev,
                 })
-            elif premium_pct <= target_pct:
+            elif fam_pct <= target_pct:
                 recommendations.append({
-                    "id": "premium-on-target",
-                    "title": f"Premium models at {premium_pct}% of spend — on target",
-                    "body": f"Model mix is healthy this week. Fable and Opus together are within the {target_pct:.0f}% target.",
+                    "id": f"{fam}-on-target",
+                    "title": f"{fam.title()} at {fam_pct}% of spend — on target",
+                    "body": f"Model mix is healthy this week. {fam.title()} is within its {target_pct:.0f}% target.",
                     "action": None,
                     "severity": "ok",
                 })
