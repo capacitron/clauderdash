@@ -1682,12 +1682,37 @@ def intelligence() -> dict[str, Any]:
                     "severity": "high",
                 })
 
-        # 2 — Flaky tools (error rate > 15%, more than 50 uses)
+        # 2 — Flaky tools (error rate > 15%, more than 50 uses, last 14 days)
+        #
+        # Two bugs found by hand-auditing this card against dashboard.db:
+        # 1. No time window — an all-time scan means a tool fixed months ago
+        #    (playwright's chrome-path issue, dead since a symlink got created
+        #    2026-05-26) keeps re-flagging forever. 14d matches "is this
+        #    happening now", which is what a Signal panel should answer.
+        # 2. is_error=1 includes the harness's own "user declined this tool
+        #    call" / "permission denied" rows — normal interactive use, not a
+        #    tool defect. For AskUserQuestion specifically these were 110 of
+        #    113 "errors" (its real error rate is ~1%). The pattern isn't
+        #    tool-specific: Bash, Agent, WebSearch, Edit all show the same
+        #    harness-injected message. Excluded from both numerator AND
+        #    denominator — a declined call was never actually executed, so it
+        #    says nothing about whether the tool itself is reliable.
+        # Verified anchored (not `LIKE '%rejected%'`): an unanchored match
+        # against error_preview caught 36 unrelated rows where tool OUTPUT
+        # happened to contain "rejected" (e.g. `git push` printing "!
+        # [rejected]" for a non-fast-forward push) — a real Bash error, not a
+        # user decline. The harness message is a fixed prefix, so anchoring
+        # with `LIKE 'The user doesn%'` is exact.
         cur.execute("""
             SELECT tool_name, COUNT(*) uses,
                    ROUND(100.0 * SUM(is_error) / MAX(1,COUNT(*)), 1) error_pct,
                    ROUND(AVG(CASE WHEN duration_ms > 0 THEN duration_ms END) / 1000.0, 1) avg_sec
             FROM tool_calls
+            WHERE started_at >= datetime('now', '-14 days')
+              AND (error_preview IS NULL OR (
+                    error_preview NOT LIKE 'The user doesn%'
+                AND error_preview NOT LIKE 'Permission for this tool use was denied%'
+              ))
             GROUP BY tool_name
             HAVING uses > 50 AND error_pct > 15
             ORDER BY error_pct DESC
