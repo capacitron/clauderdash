@@ -827,12 +827,17 @@ def context_heatmap() -> dict[str, Any]:
         ).fetchall()
         out = []
         for s in sessions:
+            # ORDER BY + LIMIT 1 on a bare SUM() is a no-op — SUM with no
+            # GROUP BY always returns exactly one row, so this used to total
+            # every assistant message in the whole session instead of reading
+            # the last one. A long session could read many multiples of its
+            # real context size (one live session measured 14.3M vs a 1M
+            # window, i.e. 1435%). Row-select the last message, then read its
+            # own token columns instead of aggregating.
             usage = cur.execute(
                 """
-                SELECT COALESCE(SUM(input_tokens),0) AS i,
-                       COALESCE(SUM(output_tokens),0) AS o,
-                       COALESCE(SUM(cache_read_tokens),0) AS cr,
-                       COALESCE(SUM(cache_create_tokens),0) AS cc
+                SELECT input_tokens AS i, output_tokens AS o,
+                       cache_read_tokens AS cr, cache_create_tokens AS cc
                   FROM messages
                  WHERE session_id = ?
                    AND role = 'assistant'
@@ -841,12 +846,15 @@ def context_heatmap() -> dict[str, Any]:
                 """,
                 (s["id"],),
             ).fetchone()
-            # Heuristic approximate "current context size" = last assistant
-            # input + cache_read + cache_create on that message.
+            # Current context size = the last assistant message's own
+            # input + cache_read + cache_create — that message's API call
+            # carried the full replayed context, so its token counts ARE the
+            # context size at that point in the conversation.
+            # A session can be live with only a user turn so far — no
+            # assistant message yet to read a token count from.
             current = (
-                int(usage["i"] or 0)
-                + int(usage["cr"] or 0)
-                + int(usage["cc"] or 0)
+                int(usage["i"] or 0) + int(usage["cr"] or 0) + int(usage["cc"] or 0)
+                if usage else 0
             )
             window = _context_window_for(s["model"])
             pct = (current / window) if window else 0
