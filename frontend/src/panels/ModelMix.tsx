@@ -28,7 +28,6 @@ type Resp = {
   premium_target_max: number;
 };
 
-// Stack order is cheapest-first so the premium tiers sit on top of the bar.
 const FAMILY_COLORS: Record<string, string> = {
   haiku: "#5b9bd5",
   sonnet: "#9b8aaa",
@@ -36,7 +35,18 @@ const FAMILY_COLORS: Record<string, string> = {
   fable: "#c4788a",
   unknown: "#405060",
 };
-const STACK_ORDER = ["haiku", "sonnet", "opus", "fable", "unknown"];
+const FALLBACK_COLOR = "#6e8aa0";
+
+// The backend sends `families` cheapest-last; reverse it so the premium tiers
+// stack on top of the bar. Derived from the payload rather than hardcoded — a
+// family added server-side must not silently vanish from the chart, which is
+// exactly how Fable went missing before.
+const titleCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+function stackOrder(families: string[]): string[] {
+  const rest = families.filter((f) => f !== "unknown");
+  return [...rest].reverse().concat(families.includes("unknown") ? ["unknown"] : []);
+}
 
 export function ModelMix() {
   const [range, setRange] = useState<Range>("7d");
@@ -69,14 +79,18 @@ export function ModelMix() {
   // Only chart families that actually appear — an empty `unknown` bucket would
   // otherwise add a dead legend entry to every stack.
   const activeFamilies = data
-    ? STACK_ORDER.filter((f) => (data.totals[f] ?? 0) > 0)
+    ? stackOrder(data.families ?? []).filter((f) => (data.totals[f] ?? 0) > 0)
     : [];
 
   return (
     <Panel
       kicker="08 · MODELS"
       title="Model mix"
-      subtitle="Premium (Fable + Opus) target ≤ 20% of spend"
+      subtitle={
+        data
+          ? `Premium (${data.premium_families.map(titleCase).join(" + ")}) target ≤ ${(data.premium_target_max * 100).toFixed(0)}% of spend`
+          : "Premium model spend share"
+      }
       action={<RangeToggle value={range} onChange={setRange} />}
     >
       {!data ? (
@@ -108,7 +122,7 @@ export function ModelMix() {
                 <span key={f} className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-text-dim">
                   <span
                     className="inline-block h-2 w-2 rounded-sm"
-                    style={{ background: FAMILY_COLORS[f] }}
+                    style={{ background: FAMILY_COLORS[f] ?? FALLBACK_COLOR }}
                   />
                   {f}
                 </span>
@@ -145,7 +159,7 @@ export function ModelMix() {
                     isAnimationActive={false}
                     dataKey={f}
                     stackId="m"
-                    fill={FAMILY_COLORS[f]}
+                    fill={FAMILY_COLORS[f] ?? FALLBACK_COLOR}
                   />
                 ))}
               </BarChart>

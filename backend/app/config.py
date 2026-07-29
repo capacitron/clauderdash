@@ -54,7 +54,9 @@ MODEL_FAMILIES = {
     "sonnet": ["claude-sonnet"],
     "haiku": ["claude-haiku"],
 }
-MODEL_FAMILY_ORDER = ["fable", "opus", "sonnet", "haiku", "unknown"]
+# Derived, never hand-maintained: a family present here but missing from the
+# order list would KeyError the bucket dicts in /api/models.
+MODEL_FAMILY_ORDER = [*MODEL_FAMILIES, "unknown"]
 
 # Families billed at premium rates. The discipline gauge tracks their share of
 # *spend*, not of token count — model prices move (Opus 5 costs a third of

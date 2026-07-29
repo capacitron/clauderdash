@@ -28,7 +28,7 @@ from ..config import (
     SUGGESTIONS_FILE,
 )
 from ..db import readonly_cursor
-from ..ingest.pricing import get_context_window, get_cost_usd
+from ..ingest.pricing import canonical_model, get_context_window, get_cost_usd
 from .ranges import percentile, resolve_range
 
 router = APIRouter(prefix="/api")
@@ -49,9 +49,16 @@ def _bucket_day(iso_ts: str | None) -> str | None:
 
 
 def _classify_model(model: str | None) -> str:
+    """Family for a model id, canonicalised first.
+
+    Without canonicalisation a proxy-routed id like `bedrock/claude-opus-5`
+    falls to "unknown" here, while the drift rule's `model LIKE '%opus%'`
+    matches it — so the gauge and the weekly rule would disagree about the
+    same rows.
+    """
     if not model:
         return "unknown"
-    lower = model.lower()
+    lower = canonical_model(model.lower())
     for family, prefixes in MODEL_FAMILIES.items():
         if any(lower.startswith(p) for p in prefixes):
             return family
@@ -512,10 +519,14 @@ def model_mix(range: str = Query("7d")) -> dict[str, Any]:
         family = _classify_model(r["model"])
         tokens = int(r["tokens"] or 0)
         cost = float(r["cost"] or 0)
-        by_day[r["day"]][family] += tokens
-        by_day[r["day"]][f"{family}_cost"] += cost
-        totals[family] += tokens
-        totals[f"{family}_cost"] += cost
+        day = by_day[r["day"]]
+        # .get(): MODEL_FAMILY_ORDER is derived from MODEL_FAMILIES so the keys
+        # should always exist, but a config edit that breaks that should drop a
+        # family off the chart, not 500 the endpoint.
+        day[family] = day.get(family, 0) + tokens
+        day[f"{family}_cost"] = day.get(f"{family}_cost", 0.0) + cost
+        totals[family] = totals.get(family, 0) + tokens
+        totals[f"{family}_cost"] = totals.get(f"{family}_cost", 0.0) + cost
 
     series = []
     for day in sorted(by_day.keys()):

@@ -1,16 +1,10 @@
 """v2 + v3 smoke tests. DEV_MODE seeds fixtures so every endpoint has data."""
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 
-# Isolate: fresh DB per run, fixtures seeded via DEV_MODE.
-_TMP = tempfile.mkdtemp(prefix="claude-dashboard-test-")
-os.environ["CLAUDE_DASHBOARD_DATA_DIR"] = _TMP
-os.environ["CLAUDE_DASHBOARD_DEV_MODE"] = "1"
-
+# Isolation (temp DATA_DIR, DEV_MODE fixtures) is set up in conftest.py, which
+# runs before this module is imported.
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
 

@@ -46,6 +46,11 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "sessions",    label: "Sessions"    },
 ];
 
+function readTabFromHash(): TabId {
+  const fromHash = window.location.hash.slice(1) as TabId;
+  return TABS.some((t) => t.id === fromHash) ? fromHash : "overview";
+}
+
 export default function App() {
   const [selected,  setSelected]  = useState<string | null>(null);
   const [provider,  setProvider]  = useState<Provider>("all");
@@ -53,14 +58,24 @@ export default function App() {
   const [gaugeData, setGaugeData] = useState<GaugeData | null>(null);
   // Tab survives reload — a dashboard you leave open on one tab should still be
   // on it after a restart, and it makes a tab linkable via #hash.
-  const [tab, setTab] = useState<TabId>(() => {
-    const fromHash = window.location.hash.slice(1) as TabId;
-    return TABS.some((t) => t.id === fromHash) ? fromHash : "overview";
-  });
+  const [tab, setTab] = useState<TabId>(() => readTabFromHash());
 
   useEffect(() => { setActiveProvider(provider); }, [provider]);
 
-  useEffect(() => { window.location.hash = tab; }, [tab]);
+  // replaceState, not `location.hash = ...`: assigning to hash pushes a history
+  // entry per tab click, so Back walks the tabs instead of leaving the page.
+  useEffect(() => {
+    if (window.location.hash.slice(1) !== tab) {
+      window.history.replaceState(null, "", `#${tab}`);
+    }
+  }, [tab]);
+
+  // Without this, Back/Forward changes the URL while the panels stay put.
+  useEffect(() => {
+    const onHashChange = () => setTab(readTabFromHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   useEffect(() => {
     const load = () =>
@@ -74,6 +89,15 @@ export default function App() {
     setGauge((prev) => (prev === g ? null : g));
 
   const gd = gaugeData;
+
+  // Amber band starts at the target the backend reports, so retuning
+  // PREMIUM_COST_SHARE_TARGET moves the gauge colours with it.
+  const targetPct = (gd?.discipline.target_max ?? 0.2) * 100;
+  const disciplineZone = {
+    t1: targetPct,
+    t2: targetPct * 1.75,
+    colors: ["green", "amber", "red"] as const,
+  };
 
   return (
     <div className="min-h-screen px-6 py-6 xl:px-10 xl:py-8">
@@ -138,7 +162,7 @@ export default function App() {
           value={gd?.discipline.value ?? 50}
           statDisplay={`${(gd?.discipline.premium_cost_pct ?? 0) * 100 < 1 ? "<1" : ((gd?.discipline.premium_cost_pct ?? 0) * 100).toFixed(0)}%`}
           detail="premium spend · 30d"
-          zone={{ t1: 20, t2: 35, colors: ["green", "amber", "red"] }}
+          zone={disciplineZone}
           active={gauge === "discipline"}
           onClick={() => toggleGauge("discipline")}
         />

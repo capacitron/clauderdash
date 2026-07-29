@@ -45,7 +45,7 @@ DEFAULT_CONTEXT_WINDOW = 200_000
 _cache: dict[str, dict[str, float]] = {}
 
 
-def _canonical(model: str) -> str:
+def canonical_model(model: str) -> str:
     """Strip @pin, date suffix (-YYYYMMDD), provider/ prefix."""
     model = model.split("@")[0]
     model = re.sub(r"-\d{8}$", "", model)
@@ -54,7 +54,7 @@ def _canonical(model: str) -> str:
 
 
 def _lookup(model: str) -> dict[str, float]:
-    canonical = _canonical(model)
+    canonical = canonical_model(model)
     if canonical in _cache:
         return _cache[canonical]
     for key, val in _cache.items():
@@ -78,7 +78,7 @@ def get_context_window(model: str | None) -> int:
     """
     if not model:
         return DEFAULT_CONTEXT_WINDOW
-    canonical = _canonical(model)
+    canonical = canonical_model(model)
     for table in (_cache, _FALLBACK):
         for key, val in table.items():
             if "ctx" not in val:
