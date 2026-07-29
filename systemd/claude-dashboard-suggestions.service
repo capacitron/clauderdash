@@ -16,7 +16,7 @@ WorkingDirectory=__PROJECT_DIR__
 ExecStart=__PROJECT_DIR__/backend/.venv/bin/python __PROJECT_DIR__/scripts/generate_recommendations.py
 # Hard timeout kills process if claude API hangs beyond 3 min
 TimeoutStartSec=180
-MemoryMax=256M
+MemoryMax=1024M
 CPUQuota=50%
 # stdout/stderr → journalctl --user -u claude-dashboard-suggestions
 StandardOutput=journal
