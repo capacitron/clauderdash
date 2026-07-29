@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   cost_usd          REAL DEFAULT 0,               -- accumulated from messages.cost_usd
   activity_type     TEXT DEFAULT 'other',          -- classifier output
   one_shot          INTEGER DEFAULT 0,             -- edit succeeded without retry
-  yielded           INTEGER,                       -- NULL=unknown 0=no commit 1=committed
+  yielded           INTEGER,                       -- NULL=unanalyzed -1=not a git repo 0=no commit 1=productive commit 2=reverted
   yield_commit      TEXT                           -- first commit SHA in session window
 );
 

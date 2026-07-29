@@ -416,17 +416,28 @@ def run_optimize_scan(conn: sqlite3.Connection) -> int:
     return inserted
 
 
-async def run_optimize_detector() -> None:
-    """Background task: run optimize scan every 30 minutes."""
+def _connect_and_scan() -> int:
+    # sqlite3 connections are single-thread-affine: opening one on the event
+    # loop's thread and handing it to run_in_executor's worker thread crashes
+    # with "SQLite objects created in a thread can only be used in that same
+    # thread" on every tick. connect() must happen on the SAME thread that
+    # runs the query, so both live inside the executor call.
     from ..db import connect
 
+    conn = connect()
+    try:
+        return run_optimize_scan(conn)
+    finally:
+        conn.close()
+
+
+async def run_optimize_detector() -> None:
+    """Background task: run optimize scan every 30 minutes."""
     loop = asyncio.get_event_loop()
     await asyncio.sleep(60)  # warm up before first scan
     while True:
         try:
-            conn = connect()
-            n = await loop.run_in_executor(None, run_optimize_scan, conn)
-            conn.close()
+            n = await loop.run_in_executor(None, _connect_and_scan)
             if n:
                 log.info("optimize: %d findings", n)
         except Exception:

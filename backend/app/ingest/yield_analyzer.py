@@ -136,17 +136,28 @@ def analyze_pending_sessions(conn: sqlite3.Connection) -> int:
     return updated
 
 
-async def run_yield_analyzer() -> None:
-    """Background task: check for unanalyzed sessions every 5 minutes."""
+def _connect_and_analyze() -> int:
+    # sqlite3 connections are single-thread-affine: opening one on the event
+    # loop's thread and handing it to run_in_executor's worker thread crashes
+    # with "SQLite objects created in a thread can only be used in that same
+    # thread" on every tick. connect() must happen on the SAME thread that
+    # runs the query, so both live inside the executor call.
     from ..db import connect
 
+    conn = connect()
+    try:
+        return analyze_pending_sessions(conn)
+    finally:
+        conn.close()
+
+
+async def run_yield_analyzer() -> None:
+    """Background task: check for unanalyzed sessions every 5 minutes."""
     loop = asyncio.get_event_loop()
     while True:
         await asyncio.sleep(_ANALYZE_INTERVAL_S)
         try:
-            conn = connect()
-            n = await loop.run_in_executor(None, analyze_pending_sessions, conn)
-            conn.close()
+            n = await loop.run_in_executor(None, _connect_and_analyze)
             if n:
                 log.info("yield: analyzed %d sessions", n)
         except Exception:
