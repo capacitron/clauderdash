@@ -486,6 +486,66 @@ def skills(range: str = Query("7d")) -> dict[str, Any]:
     return {"range": range, "days": days, "skills": out}
 
 
+# --------------------------------------------------- 7b. subagent usage --
+@router.get("/agent-usage")
+def agent_usage(range: str = Query("7d")) -> dict[str, Any]:
+    """Cost/token attribution by subagent type.
+
+    Direct per-message attribution, unlike /skills which infers cost by
+    attributing a whole session's tokens to any skill invoked in it — every
+    row here already carries its own agent_type (stamped at ingest from the
+    subagent transcript's `.meta.json` sidecar), so this is exact, not a
+    session-level heuristic.
+    """
+    since, _, days = resolve_range(range)
+    with readonly_cursor() as cur:
+        rows = cur.execute(
+            """
+            SELECT agent_type,
+                   COUNT(*) AS runs,
+                   COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_create_tokens),0) AS tokens,
+                   COALESCE(SUM(cost_usd),0) AS cost
+              FROM messages
+             WHERE role = 'assistant' AND ts >= ? AND agent_type IS NOT NULL
+          GROUP BY agent_type
+          ORDER BY cost DESC
+            """,
+            (since,),
+        ).fetchall()
+        total_row = cur.execute(
+            """
+            SELECT COALESCE(SUM(cost_usd),0) AS cost
+              FROM messages
+             WHERE role = 'assistant' AND ts >= ?
+            """,
+            (since,),
+        ).fetchone()
+
+    total_cost = float(total_row["cost"] or 0)
+    agent_cost = sum(float(r["cost"] or 0) for r in rows)
+    by_agent = [
+        {
+            "agent_type": r["agent_type"],
+            "runs": int(r["runs"]),
+            "tokens": int(r["tokens"] or 0),
+            "cost_usd": round(float(r["cost"] or 0), 4),
+            "cost_share": (float(r["cost"] or 0) / total_cost) if total_cost else 0.0,
+        }
+        for r in rows
+    ]
+    return {
+        "range": range,
+        "days": days,
+        "agents": by_agent,
+        "total_cost_usd": round(total_cost, 4),
+        "agent_cost_usd": round(agent_cost, 4),
+        # Share of ALL spend (main-loop + subagents) that ran through a
+        # subagent — the direct-attribution version of /usage's "76% of your
+        # usage came from subagent-heavy sessions".
+        "agent_cost_share": (agent_cost / total_cost) if total_cost else 0.0,
+    }
+
+
 # -------------------------------------------------- 8. model mix (Opus%) --
 @router.get("/models")
 def model_mix(range: str = Query("7d")) -> dict[str, Any]:

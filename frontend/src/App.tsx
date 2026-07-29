@@ -11,6 +11,7 @@ import { McpDrillDown } from "./panels/McpDrillDown";
 import { SessionOutcomes } from "./panels/SessionOutcomes";
 import { CacheEfficiency } from "./panels/CacheEfficiency";
 import { Skills } from "./panels/Skills";
+import { AgentUsage } from "./panels/AgentUsage";
 import { ModelMix } from "./panels/ModelMix";
 import { ProjectActivity } from "./panels/ProjectActivity";
 import { ContextHeatmap } from "./panels/ContextHeatmap";
@@ -259,6 +260,7 @@ export default function App() {
             <McpDrillDown />
             <ContextHeatmap onSelect={setSelected} />
             <Skills />
+            <AgentUsage />
           </div>
         </>}
 

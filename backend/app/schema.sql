@@ -51,8 +51,11 @@ CREATE TABLE IF NOT EXISTS messages (
   cache_create_tokens INTEGER DEFAULT 0,
   cost_usd            REAL DEFAULT 0,
   text_preview        TEXT,
+  agent_type          TEXT,                          -- subagent_type if this row came from a subagents/*.jsonl transcript, else NULL
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_messages_agent_type ON messages(agent_type) WHERE agent_type IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts);

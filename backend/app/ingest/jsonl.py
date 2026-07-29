@@ -149,6 +149,7 @@ def _process_event(
     event: dict,
     project_hash: str,
     mtime: float,
+    agent_type: str | None = None,
 ) -> None:
     etype = event.get("type")
     session_id = event.get("sessionId")
@@ -174,12 +175,12 @@ def _process_event(
     )
 
     if etype == "user":
-        _handle_user(conn, event, session_id)
+        _handle_user(conn, event, session_id, agent_type)
     elif etype == "assistant":
-        _handle_assistant(conn, event, session_id)
+        _handle_assistant(conn, event, session_id, agent_type)
 
 
-def _handle_user(conn: sqlite3.Connection, event: dict, session_id: str) -> None:
+def _handle_user(conn: sqlite3.Connection, event: dict, session_id: str, agent_type: str | None = None) -> None:
     msg = event.get("message") or {}
     content = msg.get("content")
     uuid = event.get("uuid")
@@ -191,10 +192,10 @@ def _handle_user(conn: sqlite3.Connection, event: dict, session_id: str) -> None
         conn.execute(
             """
             INSERT OR IGNORE INTO messages(
-                uuid, session_id, parent_uuid, role, ts, text_preview
-            ) VALUES(?, ?, ?, 'user', ?, ?)
+                uuid, session_id, parent_uuid, role, ts, text_preview, agent_type
+            ) VALUES(?, ?, ?, 'user', ?, ?, ?)
             """,
-            (uuid, session_id, event.get("parentUuid"), ts, preview),
+            (uuid, session_id, event.get("parentUuid"), ts, preview, agent_type),
         )
         # Keep latest user prompt on the session
         if preview and not event.get("isMeta"):
@@ -237,7 +238,7 @@ def _handle_user(conn: sqlite3.Connection, event: dict, session_id: str) -> None
                     )
 
 
-def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str) -> None:
+def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str, agent_type: str | None = None) -> None:
     msg = event.get("message") or {}
     uuid = event.get("uuid")
     ts = _parse_ts(event.get("timestamp"))
@@ -257,8 +258,8 @@ def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str) ->
             INSERT OR IGNORE INTO messages(
                 uuid, session_id, parent_uuid, role, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
-                cost_usd, text_preview
-            ) VALUES(?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, NULL)
+                cost_usd, text_preview, agent_type
+            ) VALUES(?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, NULL, ?)
             """,
             (
                 uuid,
@@ -271,6 +272,7 @@ def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str) ->
                 cr,
                 cw,
                 cost,
+                agent_type,
             ),
         )
         if cost > 0:
@@ -418,6 +420,28 @@ def _iter_jsonl_lines(path: Path, start_offset: int) -> Iterable[tuple[int, dict
             yield pos, event
 
 
+def _read_agent_type(path: Path) -> str | None:
+    """agentType for a subagent transcript, read from its `.meta.json` sidecar.
+
+    Detected by "subagents" appearing anywhere in the path rather than by
+    position, because subagent files don't sit at a fixed depth — a plain
+    Agent-tool run is `<session>/subagents/agent-<id>.jsonl` but a workflow
+    run nests further (`<session>/subagents/workflows/<wf-id>/agent-<id>.jsonl`).
+    Not every subagent run has a sidecar (older transcripts predate it), so a
+    miss just means this row's agent_type stays NULL — same as a normal
+    top-level message.
+    """
+    if "subagents" not in path.parts or path.suffix != ".jsonl":
+        return None
+    meta_path = path.with_name(path.name[: -len(".jsonl")] + ".meta.json")
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, ValueError):
+        return None
+    agent_type = meta.get("agentType")
+    return agent_type if isinstance(agent_type, str) else None
+
+
 def sync_file(path: Path) -> int:
     """Ingest new bytes from one JSONL file. Returns count of events processed."""
     try:
@@ -432,6 +456,8 @@ def sync_file(path: Path) -> int:
     project_hash = path.parent.name
     if project_hash == "subagents":
         project_hash = path.parent.parent.parent.name
+
+    agent_type = _read_agent_type(path)
 
     conn = connect()
     try:
@@ -465,7 +491,7 @@ def sync_file(path: Path) -> int:
         last_offset = offset
         last_session_id: str | None = None
         for new_offset, event in _iter_jsonl_lines(path, offset):
-            _process_event(conn, event, project_hash, mtime)
+            _process_event(conn, event, project_hash, mtime, agent_type)
             processed += 1
             last_offset = new_offset
             sid = event.get("sessionId")
