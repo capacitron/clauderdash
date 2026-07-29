@@ -9,6 +9,7 @@ import random
 import uuid
 from pathlib import Path
 from ..db import connect
+from .pricing import get_cost_usd
 
 _UTC = dt.timezone.utc
 
@@ -21,11 +22,15 @@ _MCP_TOOLS = [
     ("obsidian", "search_vault"),
     ("firecrawl", "scrape"),
 ]
-_MODELS = [
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5-20251001",
-]
+# Weight lives beside its model — a bare parallel weights list silently
+# desyncs the moment someone adds a model.
+_MODEL_WEIGHTS = {
+    "claude-fable-5": 1,
+    "claude-opus-5": 2,
+    "claude-sonnet-5": 6,
+    "claude-haiku-4-5-20251001": 3,
+}
+_MODELS = list(_MODEL_WEIGHTS)
 _SKILLS = ["plan", "review", "ship", "ralph", "build", "yt", "decide", "design-system"]
 _HOME = str(Path.home())
 _HOME_SLUG = _HOME.replace("/", "-").lstrip("-")
@@ -35,6 +40,24 @@ _PROJECTS = [
     (_HOME, f"-{_HOME_SLUG}"),
     (f"{_HOME}/projects/scripts", f"-{_HOME_SLUG}-projects-scripts"),
 ]
+
+
+def _insert_message(conn, muuid, sid, model, ts, inp, out, cache_read, cache_create) -> None:
+    """Seed one assistant message, priced the same way real ingest prices it.
+
+    cost_usd is not optional decoration: the discipline gauge and the model-mix
+    panel are both cost-weighted, so a fixture row without it renders 0%.
+    """
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO messages(
+            uuid, session_id, role, model, ts,
+            input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, cost_usd
+        ) VALUES(?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (muuid, sid, model, ts, inp, out, cache_read, cache_create,
+         get_cost_usd(model, inp, out, cache_read, cache_create)),
+    )
 
 
 def _iso(ts: dt.datetime) -> str:
@@ -51,7 +74,7 @@ def seed(n_sessions: int = 50, events_per_session: int = 20) -> int:
         for i in range(n_sessions):
             sid = "dev-" + uuid.uuid4().hex[:12]
             cwd, project_hash = random.choice(_PROJECTS)
-            model = random.choices(_MODELS, weights=[1, 5, 3])[0]
+            model = random.choices(_MODELS, weights=list(_MODEL_WEIGHTS.values()))[0]
             # v2: spread across 84 days so heatmap renders a full 12-week window
             start = now - dt.timedelta(days=random.randint(0, 83), hours=random.randint(0, 23))
             conn.execute(
@@ -113,24 +136,12 @@ def seed(n_sessions: int = 50, events_per_session: int = 20) -> int:
                 )
                 count += 1
 
-                muuid = "m_" + uuid.uuid4().hex[:16]
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO messages(
-                        uuid, session_id, role, model, ts,
-                        input_tokens, output_tokens, cache_read_tokens, cache_create_tokens
-                    ) VALUES(?, ?, 'assistant', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        muuid,
-                        sid,
-                        model,
-                        _iso(event_ts),
-                        random.randint(100, 2_000),
-                        random.randint(50, 1_500),
-                        random.randint(5_000, 30_000),
-                        random.randint(500, 5_000),
-                    ),
+                _insert_message(
+                    conn, "m_" + uuid.uuid4().hex[:16], sid, model, _iso(event_ts),
+                    random.randint(100, 2_000),
+                    random.randint(50, 1_500),
+                    random.randint(5_000, 30_000),
+                    random.randint(500, 5_000),
                 )
 
             # Maybe add a skill invocation
@@ -173,23 +184,13 @@ def _seed_mission_clock_window(conn, now: dt.datetime) -> None:
              _iso(start), _iso(start), start.timestamp()),
         )
         for _ in range(random.randint(3, 8)):
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO messages(
-                    uuid, session_id, role, model, ts,
-                    input_tokens, output_tokens, cache_read_tokens, cache_create_tokens
-                ) VALUES(?, ?, 'assistant', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "m-mc-" + uuid.uuid4().hex[:16],
-                    sid,
-                    random.choice(_MODELS),
-                    _iso(start + dt.timedelta(seconds=random.randint(1, 3600))),
-                    random.randint(500, 5000),
-                    random.randint(200, 2000),
-                    random.randint(10000, 50000),
-                    random.randint(1000, 10000),
-                ),
+            _insert_message(
+                conn, "m-mc-" + uuid.uuid4().hex[:16], sid, random.choice(_MODELS),
+                _iso(start + dt.timedelta(seconds=random.randint(1, 3600))),
+                random.randint(500, 5000),
+                random.randint(200, 2000),
+                random.randint(10000, 50000),
+                random.randint(1000, 10000),
             )
 
     # Last 3d: 5 sessions, one message each (for weekly window signal)
@@ -207,17 +208,10 @@ def _seed_mission_clock_window(conn, now: dt.datetime) -> None:
             (sid, project_hash, cwd, random.choice(_MODELS),
              _iso(start), _iso(start), start.timestamp()),
         )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO messages(
-                uuid, session_id, role, model, ts,
-                input_tokens, output_tokens, cache_read_tokens, cache_create_tokens
-            ) VALUES(?, ?, 'assistant', ?, ?, ?, ?, ?, ?)
-            """,
-            ("m-mc-w-" + uuid.uuid4().hex[:14], sid, random.choice(_MODELS),
-             _iso(start),
-             random.randint(1000, 10000), random.randint(500, 5000),
-             random.randint(20000, 100000), random.randint(2000, 20000)),
+        _insert_message(
+            conn, "m-mc-w-" + uuid.uuid4().hex[:14], sid, random.choice(_MODELS), _iso(start),
+            random.randint(1000, 10000), random.randint(500, 5000),
+            random.randint(20000, 100000), random.randint(2000, 20000),
         )
 
 

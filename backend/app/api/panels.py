@@ -1586,37 +1586,37 @@ def intelligence() -> dict[str, Any]:
                 "severity": "medium",
             })
 
-        # 3 — Opus usage vs 20% target (7-day window)
-        cur.execute("""
-            SELECT
-                ROUND(100.0 * SUM(CASE WHEN model LIKE '%opus%' THEN 1 ELSE 0 END)
-                    / MAX(1, COUNT(*)), 1) opus_pct,
-                ROUND(100.0 * SUM(CASE WHEN model LIKE '%opus%' THEN 1 ELSE 0 END)
-                    / MAX(1, COUNT(*)), 1) -
-                ROUND(100.0 * SUM(CASE WHEN model LIKE '%opus%' AND ts < datetime('now','-7 days')
-                    AND ts >= datetime('now','-14 days') THEN 1 ELSE 0 END)
-                    / MAX(1, SUM(CASE WHEN ts < datetime('now','-7 days') AND ts >= datetime('now','-14 days') THEN 1 ELSE 0 END)), 1) delta
-            FROM messages
-            WHERE ts >= datetime('now', '-7 days')
-        """)
+        # 3 — Premium (Fable + Opus) spend vs target (7-day window). Message
+        # count was the old measure: it treated one Fable reply and one Haiku
+        # reply as equal weight, and did not know Fable existed at all.
+        cur.execute(
+            """
+            SELECT ROUND(100.0 * COALESCE(SUM(CASE WHEN model LIKE '%opus%' OR model LIKE '%fable%'
+                                               THEN cost_usd END), 0)
+                / NULLIF(SUM(cost_usd), 0), 1) AS premium_pct
+              FROM messages
+             WHERE role='assistant' AND ts >= datetime('now', '-7 days')
+            """
+        )
         row = cur.fetchone()
-        if row and row["opus_pct"] is not None:
-            opus_pct = row["opus_pct"]
-            multiplier = round(opus_pct / 20.0, 1)
-            if opus_pct > 25:
-                sev = "high" if opus_pct > 40 else "medium"
+        target_pct = PREMIUM_COST_SHARE_TARGET * 100
+        if row and row["premium_pct"] is not None:
+            premium_pct = row["premium_pct"]
+            multiplier = round(premium_pct / target_pct, 1)
+            if premium_pct > target_pct * 1.25:
+                sev = "high" if premium_pct > target_pct * 2 else "medium"
                 recommendations.append({
-                    "id": "opus-over-target",
-                    "title": f"Opus at {opus_pct}% — target is 20%",
-                    "body": f"{multiplier}× over target this week. Sonnet handles most implementation work at 1/5 the cost. Switch for feature work; keep Opus for architecture.",
+                    "id": "premium-over-target",
+                    "title": f"Premium models at {premium_pct}% of spend — target is {target_pct:.0f}%",
+                    "body": f"{multiplier}× over target this week. Sonnet handles most implementation work at a fraction of the cost. Switch for feature work; keep Fable and Opus for architecture.",
                     "action": "Use Sonnet for implementation sessions — /model sonnet",
                     "severity": sev,
                 })
-            elif opus_pct <= 20:
+            elif premium_pct <= target_pct:
                 recommendations.append({
-                    "id": "opus-on-target",
-                    "title": f"Opus at {opus_pct}% — on target",
-                    "body": "Model mix is healthy this week. Opus is within the 20% target.",
+                    "id": "premium-on-target",
+                    "title": f"Premium models at {premium_pct}% of spend — on target",
+                    "body": f"Model mix is healthy this week. Fable and Opus together are within the {target_pct:.0f}% target.",
                     "action": None,
                     "severity": "ok",
                 })
