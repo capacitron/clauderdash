@@ -25,15 +25,22 @@ LITELLM_URL = (
 _CACHE_FILE = DATA_DIR / "pricing_cache.json"
 _CACHE_TTL = 24 * 3600  # seconds
 
-# Hardcoded fallback — per token (not per 1M)
+# Hardcoded fallback — per token (not per 1M). `ctx` = max input tokens.
+# Cold-start only; the LiteLLM refresh overwrites this within a day.
 _FALLBACK: dict[str, dict[str, float]] = {
-    "claude-opus-4-7":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6},
-    "claude-opus-4-6":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6},
-    "claude-opus-4-5":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6},
-    "claude-sonnet-4-6": {"input": 3e-6,  "output": 15e-6,  "cache_write": 3.75e-6,  "cache_read": 0.3e-6},
-    "claude-sonnet-4-5": {"input": 3e-6,  "output": 15e-6,  "cache_write": 3.75e-6,  "cache_read": 0.3e-6},
-    "claude-haiku-4-5":  {"input": 0.8e-6,"output": 4e-6,   "cache_write": 1e-6,     "cache_read": 0.08e-6},
+    "claude-fable-5":    {"input": 10e-6, "output": 50e-6,  "cache_write": 12.5e-6,  "cache_read": 1e-6,     "ctx": 1_000_000},
+    "claude-opus-5":     {"input": 5e-6,  "output": 25e-6,  "cache_write": 6.25e-6,  "cache_read": 0.5e-6,   "ctx": 1_000_000},
+    "claude-opus-4-8":   {"input": 5e-6,  "output": 25e-6,  "cache_write": 6.25e-6,  "cache_read": 0.5e-6,   "ctx": 1_000_000},
+    "claude-opus-4-7":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6,   "ctx": 1_000_000},
+    "claude-opus-4-6":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6,   "ctx": 1_000_000},
+    "claude-opus-4-5":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6,   "ctx": 200_000},
+    "claude-sonnet-5":   {"input": 2e-6,  "output": 10e-6,  "cache_write": 2.5e-6,   "cache_read": 0.2e-6,   "ctx": 1_000_000},
+    "claude-sonnet-4-6": {"input": 3e-6,  "output": 15e-6,  "cache_write": 3.75e-6,  "cache_read": 0.3e-6,   "ctx": 1_000_000},
+    "claude-sonnet-4-5": {"input": 3e-6,  "output": 15e-6,  "cache_write": 3.75e-6,  "cache_read": 0.3e-6,   "ctx": 200_000},
+    "claude-haiku-4-5":  {"input": 1e-6,  "output": 5e-6,   "cache_write": 1.25e-6,  "cache_read": 0.1e-6,   "ctx": 200_000},
 }
+
+DEFAULT_CONTEXT_WINDOW = 200_000
 
 _cache: dict[str, dict[str, float]] = {}
 
@@ -56,7 +63,29 @@ def _lookup(model: str) -> dict[str, float]:
     for key, val in _FALLBACK.items():
         if canonical.startswith(key) or key.startswith(canonical + "-"):
             return val
-    return _FALLBACK["claude-sonnet-4-6"]
+    return _FALLBACK["claude-sonnet-5"]
+
+
+def get_context_window(model: str | None) -> int:
+    """Max input tokens for a model. LiteLLM-sourced, falls back to the table.
+
+    Deliberately does NOT reuse _lookup: its catch-all returns a real model's
+    entry for an unrecognised name, which is fine for a cost estimate but would
+    claim a 1M window for a model we know nothing about. An unknown model gets
+    the conservative default so the context heatmap under-reports rather than
+    over-reports headroom. A disk cache written before `ctx` was parsed has no
+    `ctx` key, so those misses fall through to _FALLBACK too.
+    """
+    if not model:
+        return DEFAULT_CONTEXT_WINDOW
+    canonical = _canonical(model)
+    for table in (_cache, _FALLBACK):
+        for key, val in table.items():
+            if "ctx" not in val:
+                continue
+            if canonical.startswith(key) or key.startswith(canonical + "-"):
+                return int(val["ctx"])
+    return DEFAULT_CONTEXT_WINDOW
 
 
 def get_cost_usd(
@@ -87,6 +116,9 @@ def _parse_litellm(data: dict[str, Any]) -> dict[str, dict[str, float]]:
         cw = entry.get("cache_creation_input_token_cost", inp * 1.25)
         cr = entry.get("cache_read_input_token_cost", inp * 0.1)
         parsed = {"input": float(inp), "output": float(out), "cache_write": float(cw), "cache_read": float(cr)}
+        ctx = entry.get("max_input_tokens")
+        if ctx:
+            parsed["ctx"] = int(ctx)
         result[name] = parsed
         stripped = re.sub(r"^[^/]+/", "", name)
         if stripped != name and stripped not in result:

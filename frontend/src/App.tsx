@@ -26,9 +26,10 @@ import { Activities } from "./panels/Activities";
 import { Yield } from "./panels/Yield";
 import { Optimize } from "./panels/Optimize";
 import { SessionBrowser } from "./panels/SessionBrowser";
+import { PlanUsage } from "./panels/PlanUsage";
 
 type ActiveGauge = "burn" | "discipline" | "efficiency" | "hygiene" | "live" | null;
-type ActiveView = "dashboard" | "sessions";
+type TabId = "overview" | "cost" | "performance" | "hygiene" | "sessions";
 
 const PROVIDERS: { value: Provider; label: string }[] = [
   { value: "all",          label: "All"        },
@@ -37,14 +38,29 @@ const PROVIDERS: { value: Provider; label: string }[] = [
   { value: "gemini",       label: "Gemini"     },
 ];
 
+const TABS: { id: TabId; label: string }[] = [
+  { id: "overview",    label: "Overview"    },
+  { id: "cost",        label: "Cost"        },
+  { id: "performance", label: "Performance" },
+  { id: "hygiene",     label: "Hygiene"     },
+  { id: "sessions",    label: "Sessions"    },
+];
+
 export default function App() {
   const [selected,  setSelected]  = useState<string | null>(null);
   const [provider,  setProvider]  = useState<Provider>("all");
   const [gauge,     setGauge]     = useState<ActiveGauge>(null);
   const [gaugeData, setGaugeData] = useState<GaugeData | null>(null);
-  const [view,      setView]      = useState<ActiveView>("dashboard");
+  // Tab survives reload — a dashboard you leave open on one tab should still be
+  // on it after a restart, and it makes a tab linkable via #hash.
+  const [tab, setTab] = useState<TabId>(() => {
+    const fromHash = window.location.hash.slice(1) as TabId;
+    return TABS.some((t) => t.id === fromHash) ? fromHash : "overview";
+  });
 
   useEffect(() => { setActiveProvider(provider); }, [provider]);
+
+  useEffect(() => { window.location.hash = tab; }, [tab]);
 
   useEffect(() => {
     const load = () =>
@@ -75,36 +91,34 @@ export default function App() {
             <div className="hidden gap-6 text-right md:flex">
               <HeaderMetric label="Today" value={fmtCost(gd.burn.today_usd)} highlight />
               <HeaderMetric label="30d avg" value={fmtCost(gd.burn.avg_usd)} />
-              <HeaderMetric label="Opus" value={`${(gd.discipline.opus_pct * 100).toFixed(0)}%`} />
+              <HeaderMetric label="Premium" value={`${(gd.discipline.premium_cost_pct * 100).toFixed(0)}%`} />
               <HeaderMetric label="Cache" value={`${(gd.efficiency.hit_rate * 100).toFixed(0)}%`} />
             </div>
           )}
+          {/* Provider filter lives in the header so it stays visible across
+              tabs — it scopes every panel, not just the visible one. */}
           <div className="flex gap-1">
-            {(["dashboard", "sessions"] as ActiveView[]).map((v) => (
+            {PROVIDERS.map((p) => (
               <button
-                key={v}
-                onClick={() => setView(v)}
+                key={p.value}
+                onClick={() => setProvider(p.value)}
                 className={clsx(
                   "rounded-full px-3 py-1 font-mono text-xs uppercase tracking-wider transition-colors",
-                  view === v
+                  provider === p.value
                     ? "bg-accent-cyan/10 border border-accent-cyan/50 text-accent-cyan font-semibold"
                     : "border border-border text-text-dim hover:border-border-glow hover:text-text",
                 )}
               >
-                {v}
+                {p.label}
               </button>
             ))}
           </div>
         </div>
       </header>
 
-      {/* Sessions view */}
-      {view === "sessions" && (
-        <SessionBrowser onSelect={setSelected} />
-      )}
-
-      {/* Dashboard view */}
-      {view === "dashboard" && <>
+      {/* Pinned above the tabs: plan limits + gauges are the "is anything on
+          fire" read, and stay visible whichever tab is open. */}
+      <PlanUsage />
 
       {/* Gauge hero row */}
       <div className="mb-1 grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -122,8 +136,8 @@ export default function App() {
           kicker="02 · DISCIPLINE"
           label="Discipline"
           value={gd?.discipline.value ?? 50}
-          statDisplay={`${(gd?.discipline.opus_pct ?? 0) * 100 < 1 ? "<1" : ((gd?.discipline.opus_pct ?? 0) * 100).toFixed(0)}%`}
-          detail="opus · 30d"
+          statDisplay={`${(gd?.discipline.premium_cost_pct ?? 0) * 100 < 1 ? "<1" : ((gd?.discipline.premium_cost_pct ?? 0) * 100).toFixed(0)}%`}
+          detail="premium spend · 30d"
           zone={{ t1: 20, t2: 35, colors: ["green", "amber", "red"] }}
           active={gauge === "discipline"}
           onClick={() => toggleGauge("discipline")}
@@ -169,52 +183,72 @@ export default function App() {
         </div>
       )}
 
-      {/* Provider filter */}
-      <div className="mb-6 flex gap-2">
-        {PROVIDERS.map((p) => (
+      {/* Tab bar */}
+      <div role="tablist" aria-label="Dashboard sections" className="mb-6 flex gap-1 border-b border-border">
+        {TABS.map((t) => (
           <button
-            key={p.value}
-            onClick={() => setProvider(p.value)}
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
             className={clsx(
-              "rounded-full px-3 py-1 font-mono text-xs uppercase tracking-wider transition-colors",
-              provider === p.value
-                ? "bg-accent-cyan/10 border border-accent-cyan/50 text-accent-cyan font-semibold"
-                : "border border-border text-text-dim hover:border-border-glow hover:text-text",
+              "-mb-px border-b-2 px-4 py-2 font-mono text-xs uppercase tracking-wider transition-colors",
+              tab === t.id
+                ? "border-accent-cyan text-accent-cyan font-semibold"
+                : "border-transparent text-text-dim hover:text-text",
             )}
           >
-            {p.label}
+            {t.label}
           </button>
         ))}
       </div>
 
-      {/* Panel grid */}
+      {/* Panels. Each tab mounts only its own panels, so switching tabs stops
+          the hidden panels' polling instead of leaving 19 fetch loops running. */}
       <main>
-        <SystemHealth />
-        <MissionClock />
-        <div className="columns-1 gap-5 md:columns-2 xl:columns-3">
-          <Intelligence />
-          <LiveSessions onSelect={setSelected} />
-          <TokenUsage />
-          <ToolLatency />
-          <McpDrillDown />
-          <SessionOutcomes />
-          <CacheEfficiency />
-          <Skills />
-          <ModelMix />
-          <ProjectActivity />
-          <Activities />
-          <Yield />
-          <Optimize />
-          <ContextHeatmap onSelect={setSelected} />
-          <Heatmap />
-          <TwoStrike />
-          <RevenueLens />
-          <VaultRibbon />
-          <SuggestionBox />
-        </div>
-      </main>
+        {tab === "overview" && (
+          <div className="columns-1 gap-5 md:columns-2 xl:columns-3">
+            <Intelligence />
+            <LiveSessions onSelect={setSelected} />
+            <ProjectActivity />
+            <Activities />
+            <Heatmap />
+            <VaultRibbon />
+          </div>
+        )}
 
-      </> /* end dashboard view */}
+        {tab === "cost" && (
+          <div className="columns-1 gap-5 md:columns-2 xl:columns-3">
+            <TokenUsage />
+            <ModelMix />
+            <RevenueLens />
+            <CacheEfficiency />
+            <Yield />
+          </div>
+        )}
+
+        {tab === "performance" && <>
+          <SystemHealth />
+          <MissionClock />
+          <div className="columns-1 gap-5 md:columns-2 xl:columns-3">
+            <ToolLatency />
+            <McpDrillDown />
+            <ContextHeatmap onSelect={setSelected} />
+            <Skills />
+          </div>
+        </>}
+
+        {tab === "hygiene" && (
+          <div className="columns-1 gap-5 md:columns-2 xl:columns-3">
+            <SuggestionBox />
+            <Optimize />
+            <TwoStrike />
+            <SessionOutcomes />
+          </div>
+        )}
+
+        {tab === "sessions" && <SessionBrowser onSelect={setSelected} />}
+      </main>
 
       <footer className="mt-10 border-t border-border pt-6 text-center font-mono text-[10px] uppercase tracking-[0.2em] text-text-subtle">
         Arch · Python + SQLite · localhost-only · no accounts, no tracking

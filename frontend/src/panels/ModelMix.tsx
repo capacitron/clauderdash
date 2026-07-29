@@ -15,13 +15,28 @@ import { Panel } from "../components/Panel";
 import { RangeToggle } from "../components/RangeToggle";
 import { Skeleton, EmptyState } from "../components/Skeleton";
 
+type FamilyTotals = Record<string, number>;
+
 type Resp = {
-  series: { day: string; opus: number; sonnet: number; haiku: number; unknown: number }[];
-  totals: { opus: number; sonnet: number; haiku: number; unknown: number };
+  families: string[];
+  premium_families: string[];
+  series: (FamilyTotals & { day: string })[];
+  totals: FamilyTotals;
   total_cost_usd: number;
-  opus_pct_overall: number;
-  opus_target_max: number;
+  premium_cost_usd: number;
+  premium_cost_share: number;
+  premium_target_max: number;
 };
+
+// Stack order is cheapest-first so the premium tiers sit on top of the bar.
+const FAMILY_COLORS: Record<string, string> = {
+  haiku: "#5b9bd5",
+  sonnet: "#9b8aaa",
+  opus: "#e05252",
+  fable: "#c4788a",
+  unknown: "#405060",
+};
+const STACK_ORDER = ["haiku", "sonnet", "opus", "fable", "unknown"];
 
 export function ModelMix() {
   const [range, setRange] = useState<Range>("7d");
@@ -32,27 +47,36 @@ export function ModelMix() {
     apiGet<Resp>(`/api/models?range=${range}`).then(setData).catch(() => setData(null));
   }, [range]);
 
-  const overOpus = data && data.opus_pct_overall > data.opus_target_max;
+  const over = data && data.premium_cost_share > data.premium_target_max;
   const tone = !data
     ? "text-text"
-    : overOpus
+    : over
     ? "text-accent-red"
-    : data.opus_pct_overall > 0.15
+    : data.premium_cost_share > data.premium_target_max * 0.75
     ? "text-accent-orange"
     : "text-accent-green";
 
-  function opusNarrative(opusPct: number, target: number): string {
-    const mult = (opusPct / target).toFixed(1);
-    if (opusPct > target) return `${mult}× over the ${target}% target — Sonnet handles most tasks at 1/5 the cost.`;
-    if (opusPct > target * 0.75) return `Close to the ${target}% target. Watch for upward drift.`;
-    return `Well within the ${target}% target. Model mix is healthy.`;
+  function narrative(share: number, target: number): string {
+    // target arrives as a fraction; render it as a percentage.
+    const targetPct = (target * 100).toFixed(0);
+    const mult = (share / target).toFixed(1);
+    if (share > target)
+      return `${mult}× over the ${targetPct}% target — Sonnet handles most tasks at a fraction of the cost.`;
+    if (share > target * 0.75) return `Close to the ${targetPct}% target. Watch for upward drift.`;
+    return `Well within the ${targetPct}% target. Model mix is healthy.`;
   }
+
+  // Only chart families that actually appear — an empty `unknown` bucket would
+  // otherwise add a dead legend entry to every stack.
+  const activeFamilies = data
+    ? STACK_ORDER.filter((f) => (data.totals[f] ?? 0) > 0)
+    : [];
 
   return (
     <Panel
       kicker="08 · MODELS"
       title="Model mix"
-      subtitle="Opus target ≤ 20% of tokens"
+      subtitle="Premium (Fable + Opus) target ≤ 20% of spend"
       action={<RangeToggle value={range} onChange={setRange} />}
     >
       {!data ? (
@@ -64,21 +88,32 @@ export function ModelMix() {
           <div className="mb-3">
             <div className="flex items-baseline gap-4">
               <div>
-                <div className={clsx("stat-num", tone)}>{pct(data.opus_pct_overall, 1)}</div>
-                <div className="kicker">Opus share</div>
+                <div className={clsx("stat-num", tone)}>{pct(data.premium_cost_share, 1)}</div>
+                <div className="kicker">Premium spend share</div>
               </div>
-              {overOpus && (
+              {over && (
                 <span className="chip bg-accent-red/10 text-accent-red">Over target</span>
               )}
             </div>
             <p className="stat-narrative">
-              {opusNarrative(data.opus_pct_overall, data.opus_target_max)}
+              {narrative(data.premium_cost_share, data.premium_target_max)}
             </p>
             {data.total_cost_usd > 0 && (
               <div className="mt-1 font-mono text-xs text-accent-cyan">
-                {fmtCost(data.total_cost_usd)} this period
+                {fmtCost(data.premium_cost_usd)} premium of {fmtCost(data.total_cost_usd)} this period
               </div>
             )}
+            <div className="mt-2 flex flex-wrap gap-2">
+              {activeFamilies.map((f) => (
+                <span key={f} className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-text-dim">
+                  <span
+                    className="inline-block h-2 w-2 rounded-sm"
+                    style={{ background: FAMILY_COLORS[f] }}
+                  />
+                  {f}
+                </span>
+              ))}
+            </div>
           </div>
           <div className="flex-1">
             <ResponsiveContainer width="99%" height={140}>
@@ -104,10 +139,15 @@ export function ModelMix() {
                     fontSize: 12,
                   }}
                 />
-                <Bar isAnimationActive={false} dataKey="haiku" stackId="m" fill="#5b9bd5" />
-                <Bar isAnimationActive={false} dataKey="sonnet" stackId="m" fill="#9b8aaa" />
-                <Bar isAnimationActive={false} dataKey="opus" stackId="m" fill="#e05252" />
-                <Bar isAnimationActive={false} dataKey="unknown" stackId="m" fill="#405060" />
+                {activeFamilies.map((f) => (
+                  <Bar
+                    key={f}
+                    isAnimationActive={false}
+                    dataKey={f}
+                    stackId="m"
+                    fill={FAMILY_COLORS[f]}
+                  />
+                ))}
               </BarChart>
             </ResponsiveContainer>
           </div>

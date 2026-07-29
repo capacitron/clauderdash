@@ -15,19 +15,20 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from ..config import (
-    DEFAULT_CONTEXT_WINDOW,
     HEATMAP_WEEKS,
     HOME,
     OBSIDIAN_DIR,
     OBSIDIAN_MAX_SCAN_FILES,
     LIVE_WINDOW_SECONDS,
-    MODEL_CONTEXT_WINDOWS,
     MODEL_FAMILIES,
+    MODEL_FAMILY_ORDER,
+    PREMIUM_COST_SHARE_TARGET,
+    PREMIUM_FAMILIES,
     PROJECT_TAG_RULES,
     SUGGESTIONS_FILE,
 )
 from ..db import readonly_cursor
-from ..ingest.pricing import get_cost_usd
+from ..ingest.pricing import get_context_window, get_cost_usd
 from .ranges import percentile, resolve_range
 
 router = APIRouter(prefix="/api")
@@ -58,12 +59,7 @@ def _classify_model(model: str | None) -> str:
 
 
 def _context_window_for(model: str | None) -> int:
-    if not model:
-        return DEFAULT_CONTEXT_WINDOW
-    for prefix, window in MODEL_CONTEXT_WINDOWS.items():
-        if model.startswith(prefix):
-            return window
-    return DEFAULT_CONTEXT_WINDOW
+    return get_context_window(model)
 
 
 # ------------------------------------------------------------- summary --
@@ -501,12 +497,17 @@ def model_mix(range: str = Query("7d")) -> dict[str, Any]:
             """,
             (since,),
         ).fetchall()
-    by_day: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"opus": 0, "sonnet": 0, "haiku": 0, "unknown": 0,
-                 "opus_cost": 0.0, "sonnet_cost": 0.0, "haiku_cost": 0.0, "unknown_cost": 0.0}
-    )
-    totals: dict[str, Any] = {"opus": 0, "sonnet": 0, "haiku": 0, "unknown": 0,
-                               "opus_cost": 0.0, "sonnet_cost": 0.0, "haiku_cost": 0.0, "unknown_cost": 0.0}
+    # Buckets are derived from MODEL_FAMILY_ORDER, not spelled out — a new
+    # family in config used to silently land in `unknown` (Fable did).
+    def _empty() -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        for fam in MODEL_FAMILY_ORDER:
+            d[fam] = 0
+            d[f"{fam}_cost"] = 0.0
+        return d
+
+    by_day: dict[str, dict[str, Any]] = defaultdict(_empty)
+    totals: dict[str, Any] = _empty()
     for r in rows:
         family = _classify_model(r["model"])
         tokens = int(r["tokens"] or 0)
@@ -519,26 +520,30 @@ def model_mix(range: str = Query("7d")) -> dict[str, Any]:
     series = []
     for day in sorted(by_day.keys()):
         d = by_day[day]
-        total = sum(d[f] for f in ("opus", "sonnet", "haiku", "unknown")) or 1
+        total = sum(d[f] for f in MODEL_FAMILY_ORDER) or 1
         series.append(
             {
                 "day": day,
                 **d,
-                "opus_pct": d["opus"] / total,
-                "sonnet_pct": d["sonnet"] / total,
-                "haiku_pct": d["haiku"] / total,
+                **{f"{fam}_pct": d[fam] / total for fam in MODEL_FAMILY_ORDER},
             }
         )
-    grand_total = sum(totals[f] for f in ("opus", "sonnet", "haiku", "unknown")) or 1
-    total_cost = sum(totals[f"{f}_cost"] for f in ("opus", "sonnet", "haiku", "unknown"))
+    grand_total = sum(totals[f] for f in MODEL_FAMILY_ORDER) or 1
+    total_cost = sum(totals[f"{f}_cost"] for f in MODEL_FAMILY_ORDER)
+    premium_cost = sum(totals[f"{f}_cost"] for f in PREMIUM_FAMILIES)
     return {
         "range": range,
         "days": days,
+        "families": MODEL_FAMILY_ORDER,
+        "premium_families": list(PREMIUM_FAMILIES),
         "series": series,
         "totals": totals,
         "total_cost_usd": total_cost,
-        "opus_pct_overall": totals["opus"] / grand_total,
-        "opus_target_max": 0.20,
+        "premium_cost_usd": premium_cost,
+        "premium_cost_share": premium_cost / total_cost if total_cost else 0.0,
+        "premium_target_max": PREMIUM_COST_SHARE_TARGET,
+        # Token share per family, kept for the mix chart's percentage labels.
+        **{f"{fam}_pct_overall": totals[fam] / grand_total for fam in MODEL_FAMILY_ORDER},
     }
 
 
@@ -732,15 +737,25 @@ def gauge_data() -> dict[str, Any]:
         avg_30d = sum(float(r["c"]) for r in day_costs) / 30.0 if day_costs else 0.0
         burn_value = round(min(100.0, (today_cost / avg_30d) * 50.0), 1) if avg_30d > 0 else 50.0
 
-        # Discipline: opus % over 30d
+        # Discipline: premium-model share of *spend* over 30d. Token share was
+        # the old measure and it lied once Opus got cheap and Fable arrived
+        # above it — cost is what the target actually cares about.
         model_rows = cur.execute(
-            """SELECT model, COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_create_tokens),0) AS t
+            """SELECT model,
+                      COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_create_tokens),0) AS t,
+                      COALESCE(SUM(cost_usd),0) AS c
                FROM messages WHERE ts>=? AND role='assistant' GROUP BY model""",
             (since_30d,),
         ).fetchall()
         total_t = sum(int(r["t"] or 0) for r in model_rows) or 1
-        opus_t = sum(int(r["t"] or 0) for r in model_rows if r["model"] and "opus" in r["model"].lower())
-        opus_pct = opus_t / total_t
+        total_c = sum(float(r["c"] or 0) for r in model_rows)
+        premium_rows = [r for r in model_rows if _classify_model(r["model"]) in PREMIUM_FAMILIES]
+        premium_c = sum(float(r["c"] or 0) for r in premium_rows)
+        premium_t = sum(int(r["t"] or 0) for r in premium_rows)
+        premium_pct = premium_c / total_c if total_c else 0.0
+        by_family_cost: dict[str, float] = defaultdict(float)
+        for r in model_rows:
+            by_family_cost[_classify_model(r["model"])] += float(r["c"] or 0)
 
         # Efficiency: cache hit rate 30d
         cr = cur.execute(
@@ -770,7 +785,15 @@ def gauge_data() -> dict[str, Any]:
 
     return {
         "burn":        {"value": burn_value,          "today_usd": round(today_cost, 3), "avg_usd": round(avg_30d, 3)},
-        "discipline":  {"value": round(opus_pct*100, 1), "opus_pct": round(opus_pct, 4)},
+        "discipline":  {
+            "value": round(premium_pct * 100, 1),
+            "premium_cost_pct": round(premium_pct, 4),
+            "premium_token_pct": round(premium_t / total_t, 4),
+            "premium_cost_usd": round(premium_c, 3),
+            "target_max": PREMIUM_COST_SHARE_TARGET,
+            "families": list(PREMIUM_FAMILIES),
+            "by_family_cost": {k: round(v, 3) for k, v in sorted(by_family_cost.items())},
+        },
         "efficiency":  {"value": round(hit_rate*100, 1), "hit_rate": round(hit_rate, 4)},
         "hygiene":     {"value": hygiene_score,        "grade": grade, "score": hygiene_score},
         "live":        {"count": int(live_n)},
@@ -1302,6 +1325,110 @@ def mission_clock() -> dict[str, Any]:
     now_ts = time.time()
     with readonly_cursor() as cur:
         return _mc_compute(cur, caps, now_ts)
+
+
+# ----------------------------------------- plan limits (Anthropic-side) --
+# Everything else in this dashboard is derived from local JSONL. Plan
+# utilisation is not in those files — it only exists server-side — so this is
+# the one endpoint that leaves the machine. The token is the Claude Code OAuth
+# token already on disk; it is read per-request and never returned to the
+# frontend.
+ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+_CREDENTIALS_FILE = HOME / ".claude" / ".credentials.json"
+_USAGE_TTL = 60.0  # seconds; matches how coarsely the numbers actually move
+_usage_cache: dict[str, Any] = {"ts": 0.0, "payload": None}
+
+
+def _oauth_token() -> str | None:
+    try:
+        creds = json.loads(_CREDENTIALS_FILE.read_text())
+    except (OSError, ValueError):
+        return None
+    oauth = creds.get("claudeAiOauth") or {}
+    token = oauth.get("accessToken")
+    expires_at = oauth.get("expiresAt")
+    # expiresAt is epoch millis. A stale token would just 401, but checking is
+    # cheaper than a round trip and gives the panel a precise reason.
+    if expires_at and float(expires_at) / 1000.0 < time.time():
+        return None
+    return token
+
+
+@router.get("/plan-usage")
+def plan_usage() -> dict[str, Any]:
+    import urllib.error
+    import urllib.request
+
+    now = time.time()
+    if _usage_cache["payload"] is not None and now - _usage_cache["ts"] < _USAGE_TTL:
+        return _usage_cache["payload"]
+
+    token = _oauth_token()
+    if not token:
+        return {
+            "available": False,
+            "reason": "No valid Claude Code OAuth token in ~/.claude/.credentials.json",
+            "limits": [],
+        }
+
+    req = urllib.request.Request(
+        ANTHROPIC_USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-dashboard/2.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        return {"available": False, "reason": f"Anthropic returned {exc.code}", "limits": []}
+    except Exception as exc:
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}", "limits": []}
+
+    # `limits[]` is the current shape; the flat five_hour/seven_day keys are the
+    # older one. Prefer limits[], synthesise it from the flat keys if absent.
+    limits = raw.get("limits") or []
+    if not limits:
+        for kind, key in (("session", "five_hour"), ("weekly_all", "seven_day")):
+            block = raw.get(key)
+            if isinstance(block, dict) and block.get("utilization") is not None:
+                limits.append(
+                    {
+                        "kind": kind,
+                        "group": "session" if kind == "session" else "weekly",
+                        "percent": block["utilization"],
+                        "severity": "normal",
+                        "resets_at": block.get("resets_at"),
+                        "scope": None,
+                    }
+                )
+
+    extra = raw.get("extra_usage") or {}
+    payload = {
+        "available": True,
+        "limits": [
+            {
+                "kind": l.get("kind"),
+                "group": l.get("group"),
+                "percent": l.get("percent"),
+                "severity": l.get("severity", "normal"),
+                "resets_at": l.get("resets_at"),
+                "scope_label": ((l.get("scope") or {}).get("model") or {}).get("display_name"),
+            }
+            for l in limits
+        ],
+        "extra_usage": {
+            "enabled": bool(extra.get("is_enabled")),
+            "utilization": extra.get("utilization"),
+            "used_credits": extra.get("used_credits"),
+            "monthly_limit": extra.get("monthly_limit"),
+        },
+        "fetched_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    _usage_cache.update(ts=now, payload=payload)
+    return payload
 
 
 # =========================================================================
