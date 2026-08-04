@@ -155,3 +155,122 @@ CREATE TABLE IF NOT EXISTS hook_executions (
   PRIMARY KEY (timestamp, hook_name)
 );
 CREATE INDEX IF NOT EXISTS idx_hook_exec_recent ON hook_executions(hook_name, timestamp DESC);
+
+-- =========================================================================
+-- FIX QUEUE (v5)
+--
+-- One table for every actionable observation, replacing three parallel
+-- systems that each had their own shape and none of which could be acted on:
+--
+--   waste_findings         8 detectors, 30-min background scan
+--   intelligence()         6 live SQL rules, recomputed per request, unstored
+--   recommendations.json   weekly Haiku call + deterministic drift engine
+--
+-- Producers write here; panels read from here. See ingest/findings.py for the
+-- mapping from each producer's native shape.
+-- =========================================================================
+
+-- One row per distinct observation. UPSERTed by key on each scan, never
+-- truncated: `waste_findings` was rewritten wholesale every 30 minutes, which
+-- is what made state, history and verification impossible to add.
+CREATE TABLE IF NOT EXISTS findings (
+  key           TEXT PRIMARY KEY,                  -- stable across scans; see KEY FORMAT below
+  source        TEXT NOT NULL,                     -- detector | signal | drift | llm
+  gauge         TEXT NOT NULL,                     -- burn | discipline | efficiency | hygiene
+  severity      TEXT NOT NULL,                     -- high | medium | low | ok
+  title         TEXT NOT NULL,
+  detail        TEXT,
+
+  -- NULL and 0 mean different things and must not be conflated. NULL = this
+  -- finding's cost is not derivable from the data we hold (bash_bloat has no
+  -- result-size column to read; low_read_edit_ratio's real cost is retries,
+  -- which nothing records). 0 = measured, and genuinely nothing. Five of the
+  -- eight detectors were shipping fabricated integers here before the audit,
+  -- and a made-up number outranks every honest one the moment the queue sorts
+  -- by cost. Rank on (severity, est_tokens DESC NULLS LAST).
+  est_tokens    INTEGER,
+  est_usd       REAL,
+
+  evidence_sql  TEXT,                              -- runnable; the operator's audit trail
+  fix_kind      TEXT NOT NULL DEFAULT 'manual',    -- shell | prompt | manual
+  fix_label     TEXT,
+  fix_text      TEXT,
+
+  -- Hard gate on the short leash, enforced here rather than by convention in
+  -- calling code. Only a hardcoded shell one-liner from detector source may
+  -- ever execute unattended: a hallucinated command is destructive whether or
+  -- not anyone meant harm, so LLM-authored text is structurally barred from
+  -- the auto-run path.
+  auto_run      INTEGER NOT NULL DEFAULT 0 CHECK (
+                  auto_run = 0 OR (source = 'detector' AND fix_kind = 'shell')),
+
+  first_seen    TEXT NOT NULL,
+  last_seen     TEXT NOT NULL,
+  last_scan     TEXT NOT NULL,                     -- scan id that most recently saw it
+  resolved_at   TEXT,                              -- set when a scan stops seeing it
+
+  CHECK (source   IN ('detector','signal','drift','llm')),
+  CHECK (gauge    IN ('burn','discipline','efficiency','hygiene')),
+  CHECK (severity IN ('high','medium','low','ok')),
+  CHECK (fix_kind IN ('shell','prompt','manual'))
+);
+CREATE INDEX IF NOT EXISTS idx_findings_open ON findings(resolved_at, severity, est_tokens DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_gauge ON findings(gauge, resolved_at);
+
+-- KEY FORMAT — "<source>:<slug>", stable across scans so state survives:
+--   detector:duplicate_reads          detector pattern name
+--   signal:error-rate-elevated        the id intelligence() already emits
+--   drift:opus_cost_share             the CLAUDE.md rule id
+--   llm:<sha1(title)[:12]>            unstable by nature — Haiku rewords the
+--                                     same observation, so state on an llm row
+--                                     is best-effort and it never auto-runs
+
+-- Operator's verdict on a finding. Separate table because findings are
+-- rewritten by the scanner and a decision must outlive that.
+CREATE TABLE IF NOT EXISTS finding_state (
+  key           TEXT PRIMARY KEY,
+  status        TEXT NOT NULL,                     -- open | snoozed | accepted | fixed
+  note          TEXT,
+  snooze_until  TEXT,                              -- ISO8601; only for status='snoozed'
+  changed_at    TEXT NOT NULL,
+  CHECK (status IN ('open','snoozed','accepted','fixed'))
+);
+
+-- 'accepted' is the important one: it means "this is deliberate, stop counting
+-- it". 835 unused skills is a real measurement and a decision already made —
+-- without this the grade stays hostage to a choice the operator won't reverse.
+-- Grade counts findings that are unresolved, not accepted, not snoozed, and
+-- not severity='ok' (intelligence() emits 'ok' rows as positive confirmation,
+-- which are worth showing and must not be scored as failures).
+
+-- Every mutation the dashboard performs, with the command that reverses it.
+-- The undo log is a usability feature, not a security control: the point is
+-- that a fix can always be put back without reconstructing what it did.
+CREATE TABLE IF NOT EXISTS fix_actions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  finding_key   TEXT NOT NULL,
+  fix_kind      TEXT NOT NULL,
+  command       TEXT NOT NULL,                     -- what ran, verbatim
+  undo_command  TEXT,                              -- NULL = not reversible; UI must say so
+  status        TEXT NOT NULL,                     -- ok | failed | undone
+  output        TEXT,                              -- truncated stdout+stderr
+  exit_code     INTEGER,
+  ran_at        TEXT NOT NULL,
+  undone_at     TEXT,
+  CHECK (status IN ('ok','failed','undone'))
+);
+CREATE INDEX IF NOT EXISTS idx_fix_actions_recent ON fix_actions(ran_at DESC);
+
+-- Anthropic plan-usage samples. /plan-usage passes the API's numbers straight
+-- through with a 60s cache and keeps nothing, so there is no series to project
+-- from — "on pace to hit the weekly cap Thursday" is not computable today.
+-- Sampled on the existing poll.
+CREATE TABLE IF NOT EXISTS plan_usage_samples (
+  ts            TEXT NOT NULL,
+  kind          TEXT NOT NULL,                     -- session | weekly_all | weekly_scoped
+  scope_label   TEXT,                              -- e.g. 'Fable' on weekly_scoped
+  percent       REAL NOT NULL,
+  resets_at     TEXT,
+  PRIMARY KEY (ts, kind, scope_label)
+);
+CREATE INDEX IF NOT EXISTS idx_plan_usage_kind ON plan_usage_samples(kind, ts DESC);
