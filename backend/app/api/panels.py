@@ -27,7 +27,9 @@ from ..config import (
     PROJECT_TAG_RULES,
     SUGGESTIONS_FILE,
 )
+from ..db import cursor as write_cursor
 from ..db import readonly_cursor
+from ..ingest import findings as findings_db
 from ..ingest.optimize import DETECTOR_COUNT, SEVERITY_WEIGHT
 from .fixauth import get_or_create_token
 from ..ingest.pricing import canonical_model, get_context_window, get_cost_usd
@@ -69,6 +71,38 @@ def _hygiene_score(severities: list[str]) -> tuple[int, str, int, int]:
     elif score >= 30: grade = "D"
     else:             grade = "F"
     return score, grade, len(severities), DETECTOR_COUNT
+
+
+def _hygiene_findings(cur) -> tuple[list[dict], list[str]]:
+    """Detector findings for display, plus the severities that count toward
+    the grade.
+
+    Two different lists on purpose: the panel shows every unresolved detector
+    finding regardless of the operator's decision on it (open/snoozed/
+    accepted/fixed all render, with their status), but 'accepted' means "this
+    is deliberate, stop counting it" — accepting the 835-ghost-skills finding
+    should move the grade even though the finding itself keeps showing.
+    """
+    now = dt.datetime.now(dt.UTC).isoformat()
+    rows = cur.execute(
+        """
+        SELECT f.key, f.severity, f.title, f.detail, f.est_tokens, f.fix_kind,
+               f.fix_label, f.fix_text, f.auto_run, f.first_seen, f.last_seen,
+               COALESCE(s.status, 'open') AS status, s.note, s.snooze_until
+          FROM findings f
+          LEFT JOIN finding_state s ON s.key = f.key
+         WHERE f.source = 'detector' AND f.gauge = 'hygiene' AND f.resolved_at IS NULL
+         ORDER BY CASE f.severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                  f.est_tokens IS NULL, f.est_tokens DESC
+        """
+    ).fetchall()
+    display = [dict(r) for r in rows]
+    counted = [
+        r["severity"] for r in display
+        if r["status"] == "open"
+        or (r["status"] == "snoozed" and r["snooze_until"] and r["snooze_until"] <= now)
+    ]
+    return display, counted
 
 
 # ------------------------------------------------------------- helpers --
@@ -797,29 +831,26 @@ def yield_analysis(range: str = Query("30d"), provider: str = Query("all")) -> d
 @router.get("/optimize")
 def optimize() -> dict[str, Any]:
     with readonly_cursor() as cur:
-        rows = cur.execute(
-            """
-            SELECT pattern, severity, detail, tokens_saved, fix_label, fix_text, detected_at
-              FROM waste_findings
-             ORDER BY
-               CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
-               tokens_saved DESC
-            """
-        ).fetchall()
+        display, counted = _hygiene_findings(cur)
     findings = [
         {
-            "pattern":     r["pattern"],
+            "pattern":     r["key"].removeprefix("detector:"),
             "severity":    r["severity"],
             "detail":      r["detail"],
-            "tokens_saved": int(r["tokens_saved"] or 0),
+            "tokens_saved": r["est_tokens"],  # None = not derivable; 0 = measured zero
             "fix_label":   r["fix_label"],
             "fix_text":    r["fix_text"],
-            "detected_at": r["detected_at"],
+            "fix_kind":    r["fix_kind"],
+            "auto_run":    bool(r["auto_run"]),
+            "status":      r["status"],
+            "note":        r["note"],
+            "snooze_until": r["snooze_until"],
+            "detected_at": r["last_seen"],
         }
-        for r in rows
+        for r in display
     ]
-    total_tokens = sum(f["tokens_saved"] for f in findings)
-    health_score, grade, failing, checks = _hygiene_score([f["severity"] for f in findings])
+    total_tokens = sum(f["tokens_saved"] for f in findings if f["tokens_saved"] is not None)
+    health_score, grade, failing, checks = _hygiene_score(counted)
     return {
         "findings":      findings,
         "total_tokens_saved": total_tokens,
@@ -903,9 +934,9 @@ def gauge_data() -> dict[str, Any]:
         billable = int(cr["inp"] or 0) + int(cr["cr"] or 0) + int(cr["cc"] or 0)
         hit_rate = int(cr["cr"] or 0) / billable if billable else 0.0
 
-        # Hygiene: from waste_findings (one row per failing check, latest scan)
-        findings = cur.execute("SELECT severity FROM waste_findings").fetchall()
-        hygiene_score, grade, failing, checks = _hygiene_score([r["severity"] for r in findings])
+        # Hygiene: open detector findings, excluding accepted/still-snoozed ones.
+        _, counted = _hygiene_findings(cur)
+        hygiene_score, grade, failing, checks = _hygiene_score(counted)
 
         # Live: active sessions
         live_n = cur.execute(
@@ -1854,6 +1885,35 @@ def intelligence() -> dict[str, Any]:
     # Sort: high → medium → low → ok
     order = {"high": 0, "medium": 1, "low": 2, "ok": 3}
     recommendations.sort(key=lambda r: order.get(r["severity"], 4))
+
+    # Feed the unified findings table as a side effect of computing this
+    # panel's own response. There is no background scan for signal rules the
+    # way optimize.py has one for detectors — this endpoint IS the scan, and
+    # every load keeps `findings` current for source='signal'. The panel's
+    # response shape is unchanged; this only adds a write nothing here reads
+    # back, so a slow write cannot corrupt what gets returned.
+    scan_id = findings_db.new_scan_id()
+    rows = [
+        {
+            "key":          f"signal:{r['id']}",
+            "source":       "signal",
+            "gauge":        findings_db.signal_gauge(r["id"]),
+            "severity":     r["severity"],
+            "title":        r["title"],
+            "detail":       r.get("body"),
+            "est_tokens":   None,
+            "est_usd":      None,
+            "evidence_sql": None,
+            "fix_kind":     "manual",
+            "fix_label":    None,
+            "fix_text":     r.get("action"),
+            "auto_run":     0,
+        }
+        for r in recommendations
+    ]
+    with write_cursor() as write_cur:
+        findings_db.upsert(write_cur, scan_id, rows)
+        findings_db.resolve_missing(write_cur, scan_id, ["signal"])
 
     return {
         "recommendations": recommendations,

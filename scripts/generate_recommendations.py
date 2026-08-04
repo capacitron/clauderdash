@@ -41,6 +41,9 @@ DB_PATH = DATA_DIR / "dashboard.db"
 OUTPUT_FILE = DATA_DIR / "recommendations.json"
 LOG_FILE = DATA_DIR / "generator.log"
 
+sys.path.insert(0, str(PROJECT_ROOT / "backend"))
+from app.ingest import findings as findings_db  # noqa: E402
+
 # ---------------------------------------------------------------- CLI ----
 # CLAUDE_BIN lets headless runners (systemd) point at a concrete binary when the
 # `claude` shim can't resolve a version without an active shell (e.g. mise shims).
@@ -505,6 +508,64 @@ def validate_recs(recs: list[dict], conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
+def write_findings(drift_recs: list[dict], llm_recs: list[dict]) -> None:
+    """Upsert this run's recs into the unified findings table.
+
+    Deliberately a SEPARATE writable connection from the `conn` used for
+    query_results/validate_recs — that one is opened read-only as a privacy
+    guard (see module docstring) and must stay that way regardless of what
+    else this script starts writing.
+
+    llm_recs never get fix_kind='shell' or auto_run=1: the findings table's
+    CHECK constraint already forbids source='llm' from auto-running, and this
+    sets it explicitly so the intent reads at the call site, not just in a
+    schema file three commits away.
+    """
+    rows = []
+    for r in drift_recs:
+        rid = r["rule_ref"].split(":", 1)[-1]
+        rows.append({
+            "key":          f"drift:{rid}",
+            "source":       "drift",
+            "gauge":        findings_db.DRIFT_GAUGE.get(rid, "hygiene"),
+            "severity":     r["tier"],
+            "title":        r["title"],
+            "detail":       r["body"],
+            "est_tokens":   None,
+            "est_usd":      None,
+            "evidence_sql": r["evidence_sql"],
+            "fix_kind":     "manual",
+            "fix_label":    None,
+            "fix_text":     None,
+            "auto_run":     0,
+        })
+    for r in llm_recs:
+        rows.append({
+            "key":          findings_db.llm_key(r["title"]),
+            "source":       "llm",
+            "gauge":        "hygiene",  # no reliable per-rec classifier yet
+            "severity":     r.get("tier", "low"),
+            "title":        r["title"],
+            "detail":       r.get("body"),
+            "est_tokens":   None,
+            "est_usd":      None,
+            "evidence_sql": r.get("evidence_sql"),
+            "fix_kind":     "manual",
+            "fix_label":    None,
+            "fix_text":     None,
+            "auto_run":     0,
+        })
+
+    write_conn = sqlite3.connect(DB_PATH, timeout=5.0)
+    try:
+        scan_id = findings_db.new_scan_id()
+        findings_db.upsert(write_conn, scan_id, rows)
+        findings_db.resolve_missing(write_conn, scan_id, ["drift", "llm"])
+        write_conn.commit()
+    finally:
+        write_conn.close()
+
+
 def atomic_write_json(data: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -618,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
             "recommendations": all_recs,
         }
         atomic_write_json(out, OUTPUT_FILE)
+        write_findings(drift_recs, validated)
         append_log_line(log_entry, LOG_FILE)
         print(f"[SUGGESTIONS] wrote {len(all_recs)} recs "
               f"({len(drift_recs)} drift + {len(validated)} model) to {OUTPUT_FILE}")

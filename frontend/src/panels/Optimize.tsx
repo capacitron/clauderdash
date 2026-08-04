@@ -9,7 +9,7 @@ type Finding = {
   pattern: string;
   severity: "high" | "medium" | "low";
   detail: string;
-  tokens_saved: number;
+  tokens_saved: number | null; // null = cost not derivable from the data we hold
   fix_label: string | null;
   fix_text: string | null;
   detected_at: string;
@@ -24,9 +24,9 @@ type Resp = {
 };
 
 const SEVERITY_COLOR = {
-  high:   "text-accent-red border-accent-red/30 bg-accent-red/5",
+  high: "text-accent-red border-accent-red/30 bg-accent-red/5",
   medium: "text-accent-orange border-accent-orange/30 bg-accent-orange/5",
-  low:    "text-text-dim border-border bg-surface-2/30",
+  low: "text-text-dim border-border bg-surface-2/30",
 };
 
 const GRADE_COLOR: Record<string, string> = {
@@ -38,14 +38,14 @@ const GRADE_COLOR: Record<string, string> = {
 };
 
 const PATTERN_LABEL: Record<string, string> = {
-  junk_reads:          "Junk directory reads",
-  duplicate_reads:     "Duplicate file reads",
+  junk_reads: "Junk directory reads",
+  duplicate_reads: "Duplicate file reads",
   low_read_edit_ratio: "Low read/edit ratio",
-  unused_mcp:          "Unused MCP servers",
-  bloated_claude_md:   "Bloated CLAUDE.md",
-  bash_bloat:          "Bash output limit",
-  ghost_agents:        "Ghost agents",
-  ghost_skills:        "Ghost skills",
+  unused_mcp: "Unused MCP servers",
+  bloated_claude_md: "Bloated CLAUDE.md",
+  bash_bloat: "Bash output limit",
+  ghost_agents: "Ghost agents",
+  ghost_skills: "Ghost skills",
 };
 
 export function Optimize() {
@@ -53,7 +53,9 @@ export function Optimize() {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    apiGet<Resp>("/api/optimize").then(setData).catch(() => setData(null));
+    apiGet<Resp>("/api/optimize")
+      .then(setData)
+      .catch(() => setData(null));
   }, []);
 
   return (
@@ -68,7 +70,12 @@ export function Optimize() {
         <>
           <div className="mb-4 flex items-center gap-6">
             <div>
-              <div className={clsx("stat-num", GRADE_COLOR[data.health_grade] ?? "text-text")}>
+              <div
+                className={clsx(
+                  "stat-num",
+                  GRADE_COLOR[data.health_grade] ?? "text-text",
+                )}
+              >
                 {data.health_grade}
               </div>
               <div className="kicker">Health grade</div>
@@ -90,31 +97,40 @@ export function Optimize() {
           {data.findings.length === 0 ? (
             <EmptyState label="Nothing to fix. Setup is clean." />
           ) : (
-            <ul className="flex flex-col gap-2 overflow-y-auto scrollbar-thin" style={{ maxHeight: 340 }}>
+            <ul
+              className="flex flex-col gap-2 overflow-y-auto scrollbar-thin"
+              style={{ maxHeight: 340 }}
+            >
               {data.findings.map((f) => (
                 <li
                   key={f.pattern}
                   className={clsx(
                     "cursor-pointer rounded-lg border p-3 transition-colors",
-                    SEVERITY_COLOR[f.severity]
+                    SEVERITY_COLOR[f.severity],
                   )}
-                  onClick={() => setExpanded(expanded === f.pattern ? null : f.pattern)}
+                  onClick={() =>
+                    setExpanded(expanded === f.pattern ? null : f.pattern)
+                  }
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-medium text-text">
                       {PATTERN_LABEL[f.pattern] ?? f.pattern}
                     </span>
                     <div className="flex items-center gap-2">
-                      {f.tokens_saved > 0 && (
+                      {f.tokens_saved !== null && f.tokens_saved > 0 && (
                         <span className="font-mono text-[10px] text-text-dim">
                           ~{shortNum(f.tokens_saved)} tok saved
                         </span>
                       )}
-                      <span className={clsx("chip text-[10px] uppercase", {
-                        "bg-accent-red/10 text-accent-red": f.severity === "high",
-                        "bg-accent-orange/10 text-accent-orange": f.severity === "medium",
-                        "bg-surface text-text-dim": f.severity === "low",
-                      })}>
+                      <span
+                        className={clsx("chip text-[10px] uppercase", {
+                          "bg-accent-red/10 text-accent-red":
+                            f.severity === "high",
+                          "bg-accent-orange/10 text-accent-orange":
+                            f.severity === "medium",
+                          "bg-surface text-text-dim": f.severity === "low",
+                        })}
+                      >
                         {f.severity}
                       </span>
                     </div>

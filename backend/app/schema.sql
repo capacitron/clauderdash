@@ -129,20 +129,7 @@ CREATE TABLE IF NOT EXISTS system_metrics (
 );
 CREATE INDEX IF NOT EXISTS idx_system_metrics_ts ON system_metrics(timestamp DESC);
 
--- Waste findings from optimize detector.
-CREATE TABLE IF NOT EXISTS waste_findings (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id  TEXT,
-  pattern     TEXT NOT NULL,
-  severity    TEXT NOT NULL,                       -- high | medium | low
-  detail      TEXT,
-  tokens_saved INTEGER DEFAULT 0,
-  cost_impact REAL DEFAULT 0,
-  fix_label   TEXT,
-  fix_text    TEXT,
-  detected_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_waste_pattern ON waste_findings(pattern, detected_at DESC);
+-- Waste findings from optimize detector: superseded by `findings` below.
 
 -- Hook execution status and counts.
 CREATE TABLE IF NOT EXISTS hook_executions (

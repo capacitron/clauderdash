@@ -1,7 +1,8 @@
 """Waste pattern detection. Port of codeburn's optimize.ts detectors.
 
 Runs as background task every 30 minutes. Scans recent sessions (7d) for
-patterns that waste tokens/cost. Results written to waste_findings table.
+patterns that waste tokens/cost. Results written to the unified `findings`
+table (see ingest/findings.py) — this module owns detection, not storage.
 
 Detectors:
   junk_reads         — reads from node_modules, .git, dist, __pycache__, etc.
@@ -23,6 +24,8 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from . import findings as findings_db
 
 log = logging.getLogger(__name__)
 
@@ -256,7 +259,7 @@ def detect_low_read_edit_ratio(tool_calls: list[dict]) -> dict | None:
         "pattern":     "low_read_edit_ratio",
         "severity":    severity,
         "detail":      f"Claude made {reads} reads and {edits} modifications (ratio {ratio:.1f}:1). Healthy >= {_HEALTHY_RATIO:.0f}:1. Editing without reading first causes retries.",
-        "tokens_saved": 0,
+        "tokens_saved": None,
         "fix_label":   "Add to CLAUDE.md:",
         "fix_text":    "Before editing any file, read it first. Before modifying a function, grep for all callers.",
     }
@@ -289,7 +292,7 @@ def detect_unused_mcp(tool_calls: list[dict], project_cwds: list[str]) -> dict |
         # direction. The real figure needs a tool-count probe this scan
         # does not have.
         "detail":      f"{len(unused)} MCP server(s) configured but not called in {_SCAN_DAYS}d: {', '.join(unused[:5])}. Each server's tool list loads into every session prompt.",
-        "tokens_saved": 0,
+        "tokens_saved": None,
         "fix_label":   "Remove unused servers:",
         "fix_text":    "\n".join(f"claude mcp remove {s}" for s in unused[:10]),
     }
@@ -362,7 +365,7 @@ def detect_bash_bloat() -> dict | None:
         # would outrank every genuinely-measured finding once the queue sorts
         # by cost. Config check, no price tag.
         "detail":      f"Bash output cap is {actual//1000}K chars ({'configured' if limit else 'default'}). Recommend {_BASH_RECOMMENDED//1000}K — caps the worst case at {extra_chars//4} fewer tokens on a call that overflows.",
-        "tokens_saved": 0,
+        "tokens_saved": None,
         "fix_label":   "Add to ~/.zshrc or ~/.bashrc:",
         "fix_text":    f"export BASH_MAX_OUTPUT_LENGTH={_BASH_RECOMMENDED}",
     }
@@ -483,19 +486,18 @@ def _invoked_skills(conn: sqlite3.Connection) -> set[str]:
 
 
 def run_optimize_scan(conn: sqlite3.Connection) -> int:
-    """Run all detectors and write findings to waste_findings. Returns count."""
+    """Run all detectors and upsert results into the unified `findings` table.
+
+    A detector that stops firing must read as the problem being gone, not as
+    the row vanishing — findings.upsert()/resolve_missing() carry that state
+    across scans instead of the old wholesale-rewrite-every-30-minutes
+    approach, which is what made the table balloon to 1169 duplicate rows for
+    7 real findings before this cutover.
+    """
     since = _since_iso(_SCAN_DAYS)
     tool_calls, cwds = _scan_tool_calls(conn, since)
     project_cwds = list(set(cwds))
     invoked_skills = _invoked_skills(conn)
-    now = datetime.now(tz=timezone.utc).isoformat()
-
-    # Each scan is a full snapshot of the current state, so the previous one is
-    # wholly superseded. The old `detected_at < now-8d` predicate deleted almost
-    # nothing while the 30-min inserts kept piling up, so the table grew ~330
-    # rows/day of duplicates and every consumer that SUMs severity (hygiene
-    # gauge, tokens_saved total) read a number ~170x too large.
-    conn.execute("DELETE FROM waste_findings")
 
     detectors = [
         lambda: detect_junk_reads(tool_calls),
@@ -509,7 +511,7 @@ def run_optimize_scan(conn: sqlite3.Connection) -> int:
     ]
     assert len(detectors) == DETECTOR_COUNT, "DETECTOR_COUNT out of sync"
 
-    inserted = 0
+    rows = []
     for detect in detectors:
         try:
             finding = detect()
@@ -518,24 +520,29 @@ def run_optimize_scan(conn: sqlite3.Connection) -> int:
             finding = None
         if not finding:
             continue
-        conn.execute(
-            """
-            INSERT INTO waste_findings(pattern, severity, detail, tokens_saved, fix_label, fix_text, detected_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                finding["pattern"],
-                finding["severity"],
-                finding.get("detail"),
-                finding.get("tokens_saved", 0),
-                finding.get("fix_label"),
-                finding.get("fix_text"),
-                now,
-            ),
-        )
-        inserted += 1
+        pattern = finding["pattern"]
+        gauge, fix_kind, auto_run = findings_db.DETECTOR_MAP[pattern]
+        rows.append({
+            "key":          f"detector:{pattern}",
+            "source":       "detector",
+            "gauge":        gauge,
+            "severity":     finding["severity"],
+            "title":        pattern,
+            "detail":       finding.get("detail"),
+            "est_tokens":   finding.get("tokens_saved"),
+            "est_usd":      None,
+            "evidence_sql": None,
+            "fix_kind":     fix_kind,
+            "fix_label":    finding.get("fix_label"),
+            "fix_text":     finding.get("fix_text"),
+            "auto_run":     auto_run,
+        })
+
+    scan_id = findings_db.new_scan_id()
+    findings_db.upsert(conn, scan_id, rows)
+    findings_db.resolve_missing(conn, scan_id, ["detector"])
     conn.commit()
-    return inserted
+    return len(rows)
 
 
 def _connect_and_scan() -> int:
