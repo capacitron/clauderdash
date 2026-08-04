@@ -47,17 +47,25 @@ _READ_TOOLS = frozenset(["Read", "FileReadTool"])
 _EDIT_TOOLS = frozenset(["Edit", "Write", "FileEditTool", "FileWriteTool", "NotebookEdit"])
 _ALL_READ   = frozenset(["Read", "Grep", "Glob", "FileReadTool", "GrepTool", "GlobTool"])
 _ALL_EDIT   = frozenset(["Edit", "Write", "FileEditTool", "FileWriteTool", "NotebookEdit"])
+# Edits to a file that already exists — the only ones a prior read applies to.
+_MODIFY_TOOLS = frozenset(["Edit", "FileEditTool", "NotebookEdit"])
 
 _MIN_JUNK_READS  = 3
 _MIN_DUP_READS   = 5
 _MIN_EDITS       = 10
 _HEALTHY_RATIO   = 4.0
 _CLAUDEMD_LIMIT  = 200
+_CLAUDEMD_TOKENS_PER_LINE = 13
 _IMPORT_RE       = re.compile(r"^@(\.\.?/[^\s]+|/[^\s]+)", re.M)
 _BASH_RECOMMENDED = 15_000
 # "- name\n" wrapping around each entry in the prompt's skill/agent listing.
 _LIST_ENTRY_OVERHEAD_CHARS = 3
 _CHARS_PER_TOKEN = 4
+# Only for a re-read whose file has since been deleted, so its size is unknowable.
+_FALLBACK_READ_TOKENS = 600
+# Fraction of Agent calls that must yield a readable subagent_type before the
+# ghost-agent list is trustworthy enough to report.
+_MIN_AGENT_PARSE_RATIO = 0.5
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -89,6 +97,38 @@ def _expand_claude_md(path: Path, seen: set[str], depth: int = 0) -> int:
         if resolved.exists():
             total += _expand_claude_md(resolved, seen, depth + 1)
     return total
+
+
+_DESCRIPTION_RE = re.compile(r"^description:\s*(.+)$", re.M)
+
+
+def _agent_listing_tokens(name: str) -> int:
+    """Prompt cost of one agent's entry in the Task tool's agent listing.
+
+    Measured from the agent's own frontmatter description rather than the old
+    flat 80, which happened to be near-right for agents but was pure guess.
+    """
+    text = _read_file(_HOME / ".claude" / "agents" / f"{name}.md") or ""
+    m = _DESCRIPTION_RE.search(text)
+    desc_len = len(m.group(1)) if m else 0
+    return (len(name) + desc_len + _LIST_ENTRY_OVERHEAD_CHARS) // _CHARS_PER_TOKEN
+
+
+def _file_tokens(path: str, _cache: dict[str, int] = {}) -> int:
+    """Approximate token cost of reading `path`, from its size on disk.
+
+    Falls back to _FALLBACK_READ_TOKENS when the file has since been deleted or
+    moved, which is the only case where a guess is unavoidable. Cached because
+    one scan prices the same handful of hot files repeatedly.
+    """
+    if path in _cache:
+        return _cache[path]
+    try:
+        tokens = Path(path).stat().st_size // _CHARS_PER_TOKEN
+    except OSError:
+        tokens = _FALLBACK_READ_TOKENS
+    _cache[path] = tokens
+    return tokens
 
 
 def _load_mcp_servers(project_cwds: list[str]) -> set[str]:
@@ -160,6 +200,7 @@ def detect_duplicate_reads(tool_calls: list[dict]) -> dict | None:
         session_files[key][fp] = session_files[key].get(fp, 0) + 1
 
     total_dupes = 0
+    tokens_wasted = 0
     file_counts: dict[str, int] = {}
     for fm in session_files.values():
         for fp, cnt in fm.items():
@@ -168,6 +209,11 @@ def detect_duplicate_reads(tool_calls: list[dict]) -> dict | None:
                 total_dupes += extra
                 name = Path(fp).name
                 file_counts[name] = file_counts.get(name, 0) + extra
+                # Price each re-read at the file's actual size. The old flat
+                # 600 tokens/read was uniform across a 40-line config and a
+                # 4000-line deck.html, which put the estimate off by more than
+                # an order of magnitude in both directions.
+                tokens_wasted += extra * _file_tokens(fp)
 
     if total_dupes < _MIN_DUP_READS:
         return None
@@ -177,15 +223,29 @@ def detect_duplicate_reads(tool_calls: list[dict]) -> dict | None:
         "pattern":     "duplicate_reads",
         "severity":    "high" if total_dupes > 30 else ("medium" if total_dupes > 10 else "low"),
         "detail":      f"{total_dupes} redundant re-reads. Top: {worst_str}. Point Claude at exact line numbers in your prompt.",
-        "tokens_saved": total_dupes * 600,
+        "tokens_saved": tokens_wasted,
         "fix_label":   "In your prompt:",
         "fix_text":    "In <file> lines <start>-<end>, look at the <function> function.",
     }
 
 
 def detect_low_read_edit_ratio(tool_calls: list[dict]) -> dict | None:
+    """Behavioural check: edits landing without a read to justify them.
+
+    tokens_saved is deliberately 0. The old value was
+    `(edits * 4 - reads) * 600` — the number of reads NOT performed, priced at
+    600 tokens each. That is the cost of taking the advice, reported as the
+    benefit of taking it, and at 1.7M it sat at the top of the queue at ~9x the
+    next item with its sign reversed. The genuine saving here is retries
+    avoided, and nothing in this schema records a retry, so there is no honest
+    figure to put in its place.
+
+    Modify-only tools count; Write does not. Creating a new file requires no
+    prior read, and 161 of 1054 "edits" in the 7d window were Writes, which
+    dragged the ratio down for correct behaviour.
+    """
     reads = sum(1 for tc in tool_calls if tc["tool_name"] in _ALL_READ)
-    edits = sum(1 for tc in tool_calls if tc["tool_name"] in _ALL_EDIT)
+    edits = sum(1 for tc in tool_calls if tc["tool_name"] in _MODIFY_TOOLS)
     if edits < _MIN_EDITS:
         return None
     ratio = reads / edits
@@ -195,8 +255,8 @@ def detect_low_read_edit_ratio(tool_calls: list[dict]) -> dict | None:
     return {
         "pattern":     "low_read_edit_ratio",
         "severity":    severity,
-        "detail":      f"Claude made {reads} reads and {edits} edits (ratio {ratio:.1f}:1). Healthy >= {_HEALTHY_RATIO}:1. Editing without reading leads to retries.",
-        "tokens_saved": max(0, int(edits * _HEALTHY_RATIO) - reads) * 600,
+        "detail":      f"Claude made {reads} reads and {edits} modifications (ratio {ratio:.1f}:1). Healthy >= {_HEALTHY_RATIO:.0f}:1. Editing without reading first causes retries.",
+        "tokens_saved": 0,
         "fix_label":   "Add to CLAUDE.md:",
         "fix_text":    "Before editing any file, read it first. Before modifying a function, grep for all callers.",
     }
@@ -215,40 +275,63 @@ def detect_unused_mcp(tool_calls: list[dict], project_cwds: list[str]) -> dict |
     unused = [s for s in configured if s not in called]
     if not unused:
         return None
-    tokens_per_session = len(unused) * 5 * 400
     return {
         "pattern":     "unused_mcp",
         "severity":    "high" if len(unused) >= 3 else "medium",
-        "detail":      f"{len(unused)} MCP server(s) configured but never called: {', '.join(unused[:5])}. Each loads ~{5*400} tokens/session.",
-        "tokens_saved": tokens_per_session,
+        # "not called in the scan window", NOT "never called" — the old wording
+        # said never while the query only ever looked at _SCAN_DAYS, and
+        # jcodemunch has four tools with calls on record outside it.
+        #
+        # tokens_saved is 0: the old 5 tools x 400 assumed a fixed server size,
+        # but a server's prompt cost depends on its tool count and whether the
+        # harness defers its schemas. jcodemunch alone exposes ~100 deferred
+        # tools, so the estimate was off by ~50x and in the optimistic
+        # direction. The real figure needs a tool-count probe this scan
+        # does not have.
+        "detail":      f"{len(unused)} MCP server(s) configured but not called in {_SCAN_DAYS}d: {', '.join(unused[:5])}. Each server's tool list loads into every session prompt.",
+        "tokens_saved": 0,
         "fix_label":   "Remove unused servers:",
         "fix_text":    "\n".join(f"claude mcp remove {s}" for s in unused[:10]),
     }
 
 
 def detect_bloated_claude_md(project_cwds: list[str]) -> dict | None:
-    bloated = []
+    """Oversized instruction files, counting @-imports.
+
+    The global files are checked first and matter most: ~/.claude/CLAUDE.md and
+    ~/CLAUDE.md load into EVERY session regardless of directory, while a
+    project file only costs you in that project. The old version scanned
+    project cwds exclusively, so a 261-line ~/CLAUDE.md — over the limit, and
+    paid for on every single session — was invisible to it.
+    """
+    candidates = [_HOME / ".claude" / "CLAUDE.md", _HOME / "CLAUDE.md"]
     for cwd in set(project_cwds):
-        for name in ["CLAUDE.md", ".claude/CLAUDE.md"]:
-            full = Path(cwd) / name
-            if not full.exists():
-                continue
-            lines = _expand_claude_md(full, set())
-            if lines > _CLAUDEMD_LIMIT:
-                bloated.append((str(full), lines))
+        candidates += [Path(cwd) / "CLAUDE.md", Path(cwd) / ".claude" / "CLAUDE.md"]
+
+    bloated = []
+    for full in candidates:
+        if not full.exists():
+            continue
+        lines = _expand_claude_md(full, set())
+        if lines > _CLAUDEMD_LIMIT:
+            bloated.append((str(full), lines, full.parent in (_HOME, _HOME / ".claude")))
 
     if not bloated:
         return None
-    bloated.sort(key=lambda x: -x[1])
-    worst_path, worst_lines = bloated[0]
-    total_extra = sum(max(0, l - _CLAUDEMD_LIMIT) for _, l in bloated)
+    # Global files sort first at equal size: they are charged on every session.
+    bloated.sort(key=lambda x: (not x[2], -x[1]))
+    worst_path, worst_lines, worst_global = bloated[0]
+    total_extra = sum(max(0, l - _CLAUDEMD_LIMIT) for _, l, _ in bloated)
+    scope = "every session" if worst_global else "every session in that project"
     return {
         "pattern":     "bloated_claude_md",
         "severity":    "high" if worst_lines > 400 else "medium",
-        "detail":      f"{worst_path} has {worst_lines} lines (expanded). Limit: {_CLAUDEMD_LIMIT}. ~{total_extra * 13} extra tokens/call.",
-        "tokens_saved": total_extra * 13,
+        # Per session, not per call: the file is part of the cached prompt
+        # prefix, so it is paid once at cache-write and read cheaply after.
+        "detail":      f"{worst_path} has {worst_lines} lines expanded (limit {_CLAUDEMD_LIMIT}), loaded on {scope}. {len(bloated)} file(s) over, ~{total_extra * _CLAUDEMD_TOKENS_PER_LINE} extra tokens/session.",
+        "tokens_saved": total_extra * _CLAUDEMD_TOKENS_PER_LINE,
         "fix_label":   "Ask Claude to trim it:",
-        "fix_text":    f"Review CLAUDE.md and all @-imported files. Cut to under {_CLAUDEMD_LIMIT} lines. Remove anything derivable from code.",
+        "fix_text":    f"Review {worst_path} and all @-imported files. Cut to under {_CLAUDEMD_LIMIT} lines. Remove anything derivable from code.",
     }
 
 
@@ -293,8 +376,10 @@ def detect_ghost_agents(tool_calls: list[dict]) -> dict | None:
     if not defined:
         return None
     invoked: set[str] = set()
+    agent_calls = 0
     for tc in tool_calls:
         if tc["tool_name"] in ("Agent", "Task"):
+            agent_calls += 1
             try:
                 inp = json.loads(tc.get("input_preview", "{}"))
                 st = inp.get("subagent_type")
@@ -302,14 +387,21 @@ def detect_ghost_agents(tool_calls: list[dict]) -> dict | None:
                     invoked.add(st)
             except Exception:
                 pass
+    # There is no agent_invocations table to consult (unlike skills), and
+    # input_preview is truncated, so most Agent calls never surface a readable
+    # subagent_type — 65 of 200 in the audited window. Below half, "never
+    # invoked" is indistinguishable from "invocation not recorded", and naming
+    # a used agent as a ghost is worse than staying quiet.
+    if not agent_calls or len(invoked) * 2 < _MIN_AGENT_PARSE_RATIO * agent_calls:
+        return None
     ghosts = [n for n in defined if n not in invoked]
     if not ghosts:
         return None
     return {
         "pattern":     "ghost_agents",
         "severity":    "high" if len(ghosts) >= 5 else ("medium" if len(ghosts) >= 2 else "low"),
-        "detail":      f"{len(ghosts)} agent(s) in ~/.claude/agents/ never invoked: {', '.join(ghosts[:5])}. Each adds ~80 tokens to Task schema/session.",
-        "tokens_saved": len(ghosts) * 80,
+        "detail":      f"{len(ghosts)} of {len(defined)} agent(s) in ~/.claude/agents/ never invoked: {', '.join(ghosts[:5])}. Each adds its description to the Task schema every session.",
+        "tokens_saved": sum(_agent_listing_tokens(n) for n in ghosts),
         "fix_label":   "Archive unused agents:",
         "fix_text":    "\n".join(f"mv ~/.claude/agents/{n}.md ~/.claude/agents/.archived/" for n in ghosts[:10]),
     }
