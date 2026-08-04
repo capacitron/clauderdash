@@ -55,6 +55,9 @@ _HEALTHY_RATIO   = 4.0
 _CLAUDEMD_LIMIT  = 200
 _IMPORT_RE       = re.compile(r"^@(\.\.?/[^\s]+|/[^\s]+)", re.M)
 _BASH_RECOMMENDED = 15_000
+# "- name\n" wrapping around each entry in the prompt's skill/agent listing.
+_LIST_ENTRY_OVERHEAD_CHARS = 3
+_CHARS_PER_TOKEN = 4
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -269,8 +272,14 @@ def detect_bash_bloat() -> dict | None:
     return {
         "pattern":     "bash_bloat",
         "severity":    "medium",
-        "detail":      f"Bash output cap is {actual//1000}K chars ({'configured' if limit else 'default'}). Recommend {_BASH_RECOMMENDED//1000}K. ~{extra_chars // 4} wasted tokens/bash call.",
-        "tokens_saved": extra_chars // 4,
+        # tokens_saved deliberately 0. The old value was (cap - recommended)/4
+        # per call, which assumes every Bash call fills the buffer — most return
+        # a few lines. tool_calls stores no result size, so the real figure is
+        # not derivable from this data at all, and a fabricated number here
+        # would outrank every genuinely-measured finding once the queue sorts
+        # by cost. Config check, no price tag.
+        "detail":      f"Bash output cap is {actual//1000}K chars ({'configured' if limit else 'default'}). Recommend {_BASH_RECOMMENDED//1000}K — caps the worst case at {extra_chars//4} fewer tokens on a call that overflows.",
+        "tokens_saved": 0,
         "fix_label":   "Add to ~/.zshrc or ~/.bashrc:",
         "fix_text":    f"export BASH_MAX_OUTPUT_LENGTH={_BASH_RECOMMENDED}",
     }
@@ -306,31 +315,33 @@ def detect_ghost_agents(tool_calls: list[dict]) -> dict | None:
     }
 
 
-def detect_ghost_skills(tool_calls: list[dict]) -> dict | None:
+def detect_ghost_skills(invoked: set[str]) -> dict | None:
+    """Skills present in every session's prompt that have never been used.
+
+    `invoked` comes from the skill_invocations table, not from re-parsing
+    tool_calls.input_preview. The old version did the latter and found 9 used
+    skills where the dedicated table records 52 — a Skill call does not always
+    leave a parseable `skill` key in the preview, so it over-reported ghosts by
+    ~43 and inflated the finding's severity along with it.
+    """
     skills_dir = _HOME / ".claude" / "skills"
     if not skills_dir.exists():
         return None
     defined = [p.name for p in skills_dir.iterdir() if (p / "SKILL.md").exists()]
     if not defined:
         return None
-    invoked: set[str] = set()
-    for tc in tool_calls:
-        if tc["tool_name"] == "Skill":
-            try:
-                inp = json.loads(tc.get("input_preview", "{}"))
-                sk = inp.get("skill") or inp.get("name")
-                if sk:
-                    invoked.add(sk)
-            except Exception:
-                pass
     ghosts = [n for n in defined if n not in invoked]
     if not ghosts:
         return None
+    # User skills render in the prompt as a bare "- name" line, so the cost is
+    # measurable from the names themselves. The old flat 80 tokens/skill was
+    # ~10x over: it priced every entry as though it carried a full description.
+    tokens = sum(len(n) + _LIST_ENTRY_OVERHEAD_CHARS for n in ghosts) // _CHARS_PER_TOKEN
     return {
         "pattern":     "ghost_skills",
         "severity":    "high" if len(ghosts) >= 10 else ("medium" if len(ghosts) >= 5 else "low"),
-        "detail":      f"{len(ghosts)} skill(s) never invoked: {', '.join(ghosts[:5])}. Each adds ~80 tokens of metadata/session.",
-        "tokens_saved": len(ghosts) * 80,
+        "detail":      f"{len(ghosts)} of {len(defined)} skill(s) never invoked: {', '.join(ghosts[:5])}. ~{tokens} tokens of listing in every session prompt.",
+        "tokens_saved": tokens,
         "fix_label":   "Archive unused skills:",
         "fix_text":    "\n".join(f"mv ~/.claude/skills/{n} ~/.claude/skills/.archived/" for n in ghosts[:10]),
     }
@@ -370,11 +381,21 @@ def _scan_tool_calls(conn: sqlite3.Connection, since: str) -> tuple[list[dict], 
     return tool_calls, cwds
 
 
+def _invoked_skills(conn: sqlite3.Connection) -> set[str]:
+    """Every skill ever invoked, from the table that records exactly that.
+
+    Not windowed to _SCAN_DAYS: a skill used once six months ago is one you
+    kept on purpose, and telling you to archive it is noise.
+    """
+    return {r[0] for r in conn.execute("SELECT DISTINCT skill_name FROM skill_invocations")}
+
+
 def run_optimize_scan(conn: sqlite3.Connection) -> int:
     """Run all detectors and write findings to waste_findings. Returns count."""
     since = _since_iso(_SCAN_DAYS)
     tool_calls, cwds = _scan_tool_calls(conn, since)
     project_cwds = list(set(cwds))
+    invoked_skills = _invoked_skills(conn)
     now = datetime.now(tz=timezone.utc).isoformat()
 
     # Each scan is a full snapshot of the current state, so the previous one is
@@ -392,7 +413,7 @@ def run_optimize_scan(conn: sqlite3.Connection) -> int:
         lambda: detect_bloated_claude_md(project_cwds),
         lambda: detect_bash_bloat(),
         lambda: detect_ghost_agents(tool_calls),
-        lambda: detect_ghost_skills(tool_calls),
+        lambda: detect_ghost_skills(invoked_skills),
     ]
     assert len(detectors) == DETECTOR_COUNT, "DETECTOR_COUNT out of sync"
 

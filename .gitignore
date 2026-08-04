@@ -32,3 +32,4 @@ data/generator.log
 # Claude Code plans (personal session state)
 .claude/plans/
 data/pricing_cache.json
+data/.fix-token

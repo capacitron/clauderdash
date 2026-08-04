@@ -29,10 +29,23 @@ from ..config import (
 )
 from ..db import readonly_cursor
 from ..ingest.optimize import DETECTOR_COUNT, SEVERITY_WEIGHT
+from .fixauth import get_or_create_token
 from ..ingest.pricing import canonical_model, get_context_window, get_cost_usd
 from .ranges import percentile, resolve_range
 
 router = APIRouter(prefix="/api")
+
+
+@router.get("/fix-token")
+def fix_token() -> dict[str, str]:
+    """Hand the SPA the token it must echo back on every write call.
+
+    Safe to serve over GET: cross-origin script can issue the request but
+    cannot read the response, because this app mounts no CORS middleware.
+    See api/fixauth.py for why the token exists at all.
+    """
+    return {"token": get_or_create_token()}
+
 
 _MAX_HYGIENE_WEIGHT = DETECTOR_COUNT * max(SEVERITY_WEIGHT.values())
 
