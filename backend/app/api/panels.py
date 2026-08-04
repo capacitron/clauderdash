@@ -828,37 +828,58 @@ def yield_analysis(range: str = Query("30d"), provider: str = Query("all")) -> d
 
 
 # -------------------------------------------------- optimize / waste --
-@router.get("/optimize")
-def optimize() -> dict[str, Any]:
+@router.get("/fix-queue")
+def fix_queue() -> dict[str, Any]:
+    """Everything actionable, ranked, with the operator's decisions attached.
+
+    Supersedes the old /api/optimize, which showed detector findings only and
+    read-only. Signal and drift findings are real observations about the same
+    machine — splitting them across three panels is what made none of them
+    actionable.
+    """
+    now = dt.datetime.now(dt.UTC).isoformat()
     with readonly_cursor() as cur:
-        display, counted = _hygiene_findings(cur)
-    findings = [
-        {
-            "pattern":     r["key"].removeprefix("detector:"),
-            "severity":    r["severity"],
-            "detail":      r["detail"],
-            "tokens_saved": r["est_tokens"],  # None = not derivable; 0 = measured zero
-            "fix_label":   r["fix_label"],
-            "fix_text":    r["fix_text"],
-            "fix_kind":    r["fix_kind"],
-            "auto_run":    bool(r["auto_run"]),
-            "status":      r["status"],
-            "note":        r["note"],
-            "snooze_until": r["snooze_until"],
-            "detected_at": r["last_seen"],
-        }
-        for r in display
-    ]
-    total_tokens = sum(f["tokens_saved"] for f in findings if f["tokens_saved"] is not None)
+        rows = cur.execute(
+            """
+            SELECT f.key, f.source, f.gauge, f.severity, f.title, f.detail,
+                   f.est_tokens, f.fix_kind, f.fix_label, f.fix_text, f.auto_run,
+                   f.first_seen, f.last_seen,
+                   COALESCE(s.status, 'open') AS status, s.note, s.snooze_until
+              FROM findings f
+              LEFT JOIN finding_state s ON s.key = f.key
+             WHERE f.resolved_at IS NULL AND f.severity != 'ok'
+             ORDER BY CASE f.severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+                      f.est_tokens IS NULL, f.est_tokens DESC
+            """
+        ).fetchall()
+
+        # Undoable actions, newest first. Only 'ok' rows with a recorded undo
+        # command can be reversed; failed and already-undone ones are history.
+        undoable = cur.execute(
+            """SELECT id, finding_key, command, status, ran_at
+                 FROM fix_actions
+                WHERE status = 'ok' AND undo_command IS NOT NULL
+             ORDER BY ran_at DESC LIMIT 10"""
+        ).fetchall()
+
+        _, counted = _hygiene_findings(cur)
+
+    findings = [dict(r) | {"auto_run": bool(r["auto_run"])} for r in rows]
+    # Live status, so a snooze that has elapsed reads as open without waiting
+    # for the next scan to touch the row.
+    for f in findings:
+        if f["status"] == "snoozed" and f["snooze_until"] and f["snooze_until"] <= now:
+            f["status"] = "open"
     health_score, grade, failing, checks = _hygiene_score(counted)
     return {
         "findings":      findings,
-        "total_tokens_saved": total_tokens,
+        "total_tokens":  sum(f["est_tokens"] for f in findings if f["est_tokens"] is not None),
         "health_score":  health_score,
         "health_grade":  grade,
         "checks_failing": failing,
         "checks_total":  checks,
-        "last_scanned":  findings[0]["detected_at"] if findings else None,
+        "undoable":      [dict(r) for r in undoable],
+        "last_scanned":  max((f["last_seen"] for f in findings), default=None),
     }
 
 

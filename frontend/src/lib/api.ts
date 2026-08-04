@@ -72,3 +72,45 @@ export async function apiGet<T>(path: string): Promise<T> {
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return res.json();
 }
+
+// Write calls carry the fix token. Any custom request header forces a CORS
+// preflight, and the backend mounts no CORS middleware, so a page on another
+// origin cannot send this even though it can reach localhost — see
+// backend/app/api/fixauth.py. Fetched once and cached; the token only rotates
+// if data/.fix-token is deleted, which requires a restart anyway.
+let _fixToken: Promise<string> | null = null;
+
+function fixToken(): Promise<string> {
+  if (!_fixToken) {
+    _fixToken = apiGet<{ token: string }>("/api/fix-token")
+      .then((r) => r.token)
+      .catch((e) => {
+        _fixToken = null; // don't cache a failure; let the next click retry
+        throw e;
+      });
+  }
+  return _fixToken;
+}
+
+export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
+  const token = await fixToken();
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Dashboard-Token": token,
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    // FastAPI puts the useful part in `detail`; surface it rather than a bare
+    // status, since these are operator-facing errors ("not on the allowlist").
+    const detail = await res
+      .json()
+      .then((d: { detail?: string }) => d.detail)
+      .catch(() => null);
+    throw new Error(detail || `${path} → ${res.status}`);
+  }
+  return res.json();
+}

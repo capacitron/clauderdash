@@ -30,7 +30,7 @@ import { SuggestionBox } from "./panels/SuggestionBox";
 import { Intelligence } from "./panels/Intelligence";
 import { Activities } from "./panels/Activities";
 import { Yield } from "./panels/Yield";
-import { Optimize } from "./panels/Optimize";
+import { FixQueue } from "./panels/FixQueue";
 import { SessionBrowser } from "./panels/SessionBrowser";
 import { PlanUsage } from "./panels/PlanUsage";
 
@@ -245,7 +245,7 @@ export default function App() {
           {gauge === "burn" && <RevenueLens />}
           {gauge === "discipline" && <ModelMix />}
           {gauge === "efficiency" && <CacheEfficiency />}
-          {gauge === "hygiene" && <Optimize />}
+          {gauge === "hygiene" && <FixQueue />}
           {gauge === "live" && <LiveSessions onSelect={setSelected} />}
         </div>
       )}
@@ -314,8 +314,8 @@ export default function App() {
 
         {tab === "hygiene" && (
           <div className="columns-1 gap-5 md:columns-2 xl:columns-3">
+            <FixQueue />
             <SuggestionBox />
-            <Optimize />
             <TwoStrike />
             <SessionOutcomes />
           </div>
