@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from .api.fixactions import router as fixactions_router
 from .api.panels import router as panels_router
 from .config import DEV_MODE, FRONTEND_DIST, HOST, PORT
 from .db import init_db
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
 
     app.include_router(otel_router)
     app.include_router(panels_router)
+    app.include_router(fixactions_router)
 
     @app.get("/healthz")
     def healthz():

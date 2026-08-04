@@ -41,7 +41,16 @@ DETECTOR_MAP: dict[str, tuple[str, str, int]] = {
     "duplicate_reads":     ("hygiene", "prompt", 0),
     "low_read_edit_ratio": ("hygiene", "prompt", 0),
     "bloated_claude_md":   ("hygiene", "prompt", 0),
-    "unused_mcp":          ("hygiene", "shell",  1),
+    # unused_mcp is shell but NOT auto_run. Removing an MCP server cannot be
+    # undone by this dashboard: the server's original scope (user / .mcp.json
+    # project / local) and its transport, args and env are not recorded
+    # anywhere the scan can read, so there is no faithful `claude mcp add` to
+    # hand back. It shipped as auto_run=1 alongside a handler that returned
+    # undo_command=None, which is exactly the contradiction the short-leash +
+    # undo-log choice rules out. Demonstrated live on 2026-08-04: the removal
+    # failed against a .mcp.json-scoped server and the attempted restore landed
+    # in a different scope than the original.
+    "unused_mcp":          ("hygiene", "shell",  0),
     "bash_bloat":          ("hygiene", "shell",  1),
     "ghost_agents":        ("hygiene", "shell",  0),
     "ghost_skills":        ("hygiene", "shell",  0),
@@ -239,6 +248,11 @@ if __name__ == "__main__":  # python -m app.ingest.findings
     assert signal_gauge("flaky-tool-Bash") == "hygiene"
     assert signal_gauge("cache-low") == "efficiency"
     assert signal_gauge("something-new") == "hygiene"
-    assert sum(a for _, _, a in DETECTOR_MAP.values()) == 2, "short leash is two fixes"
+    # One auto-run fix, and it must be the reversible one. api/fixactions.py
+    # asserts at import that every auto_run pattern here has a handler
+    # declaring a working undo, so widening this set fails loudly at startup
+    # rather than at the moment someone presses the button.
+    auto = [p for p, (_, _, a) in DETECTOR_MAP.items() if a]
+    assert auto == ["bash_bloat"], f"short leash drifted: {auto}"
 
     print("findings mapping self-check: 14/14")
