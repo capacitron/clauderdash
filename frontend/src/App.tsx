@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import { apiGet, setActiveProvider, type Provider, type GaugeData } from "./lib/api";
+import {
+  apiGet,
+  setActiveProvider,
+  type Provider,
+  type GaugeData,
+} from "./lib/api";
 import { fmtCost } from "./lib/format";
 import { ArcGauge } from "./components/ArcGauge";
 import { SystemHealth } from "./panels/SystemHealth";
@@ -29,22 +34,28 @@ import { Optimize } from "./panels/Optimize";
 import { SessionBrowser } from "./panels/SessionBrowser";
 import { PlanUsage } from "./panels/PlanUsage";
 
-type ActiveGauge = "burn" | "discipline" | "efficiency" | "hygiene" | "live" | null;
+type ActiveGauge =
+  | "burn"
+  | "discipline"
+  | "efficiency"
+  | "hygiene"
+  | "live"
+  | null;
 type TabId = "overview" | "cost" | "performance" | "hygiene" | "sessions";
 
 const PROVIDERS: { value: Provider; label: string }[] = [
-  { value: "all",          label: "All"        },
-  { value: "claude-code",  label: "Claude Code" },
-  { value: "codex",        label: "Codex"      },
-  { value: "gemini",       label: "Gemini"     },
+  { value: "all", label: "All" },
+  { value: "claude-code", label: "Claude Code" },
+  { value: "codex", label: "Codex" },
+  { value: "gemini", label: "Gemini" },
 ];
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: "overview",    label: "Overview"    },
-  { id: "cost",        label: "Cost"        },
+  { id: "overview", label: "Overview" },
+  { id: "cost", label: "Cost" },
   { id: "performance", label: "Performance" },
-  { id: "hygiene",     label: "Hygiene"     },
-  { id: "sessions",    label: "Sessions"    },
+  { id: "hygiene", label: "Hygiene" },
+  { id: "sessions", label: "Sessions" },
 ];
 
 function readTabFromHash(): TabId {
@@ -53,15 +64,17 @@ function readTabFromHash(): TabId {
 }
 
 export default function App() {
-  const [selected,  setSelected]  = useState<string | null>(null);
-  const [provider,  setProvider]  = useState<Provider>("all");
-  const [gauge,     setGauge]     = useState<ActiveGauge>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [provider, setProvider] = useState<Provider>("all");
+  const [gauge, setGauge] = useState<ActiveGauge>(null);
   const [gaugeData, setGaugeData] = useState<GaugeData | null>(null);
   // Tab survives reload — a dashboard you leave open on one tab should still be
   // on it after a restart, and it makes a tab linkable via #hash.
   const [tab, setTab] = useState<TabId>(() => readTabFromHash());
 
-  useEffect(() => { setActiveProvider(provider); }, [provider]);
+  useEffect(() => {
+    setActiveProvider(provider);
+  }, [provider]);
 
   // replaceState, not `location.hash = ...`: assigning to hash pushes a history
   // entry per tab click, so Back walks the tabs instead of leaving the page.
@@ -80,7 +93,9 @@ export default function App() {
 
   useEffect(() => {
     const load = () =>
-      apiGet<GaugeData>("/api/gauge").then(setGaugeData).catch(() => {});
+      apiGet<GaugeData>("/api/gauge")
+        .then(setGaugeData)
+        .catch(() => {});
     load();
     const id = setInterval(load, 15_000);
     return () => clearInterval(id);
@@ -102,11 +117,12 @@ export default function App() {
     colors: ["green", "amber", "red"] as const,
   };
   const worstFamily = gd?.discipline.worst_family;
-  const worstCompliance = worstFamily ? gd?.discipline.family_compliance[worstFamily] : undefined;
+  const worstCompliance = worstFamily
+    ? gd?.discipline.family_compliance[worstFamily]
+    : undefined;
 
   return (
     <div className="min-h-screen px-6 py-6 xl:px-10 xl:py-8">
-
       {/* Header */}
       <header className="mb-6 flex items-end justify-between">
         <div>
@@ -118,10 +134,20 @@ export default function App() {
         <div className="flex items-end gap-6">
           {gd && (
             <div className="hidden gap-6 text-right md:flex">
-              <HeaderMetric label="Today" value={fmtCost(gd.burn.today_usd)} highlight />
+              <HeaderMetric
+                label="Today"
+                value={fmtCost(gd.burn.today_usd)}
+                highlight
+              />
               <HeaderMetric label="30d avg" value={fmtCost(gd.burn.avg_usd)} />
-              <HeaderMetric label="Premium" value={`${(gd.discipline.premium_cost_pct * 100).toFixed(0)}%`} />
-              <HeaderMetric label="Cache" value={`${(gd.efficiency.hit_rate * 100).toFixed(0)}%`} />
+              <HeaderMetric
+                label="Premium"
+                value={`${(gd.discipline.premium_cost_pct * 100).toFixed(0)}%`}
+              />
+              <HeaderMetric
+                label="Cache"
+                value={`${(gd.efficiency.hit_rate * 100).toFixed(0)}%`}
+              />
             </div>
           )}
           {/* Provider filter lives in the header so it stays visible across
@@ -194,7 +220,11 @@ export default function App() {
           label="Hygiene"
           value={gd?.hygiene.value ?? 50}
           statDisplay={gd?.hygiene.grade ?? "—"}
-          detail={`${gd?.hygiene.score ?? "—"} / 100`}
+          detail={
+            gd
+              ? `${gd.hygiene.checks_total - gd.hygiene.checks_failing}/${gd.hygiene.checks_total} checks passing`
+              : "—"
+          }
           zone={{ t1: 55, t2: 75, colors: ["red", "amber", "green"] }}
           active={gauge === "hygiene"}
           onClick={() => toggleGauge("hygiene")}
@@ -212,16 +242,20 @@ export default function App() {
       {/* Expanded gauge panel */}
       {gauge && (
         <div key={gauge} className="mb-6 mt-3 animate-fade-in">
-          {gauge === "burn"        && <RevenueLens />}
-          {gauge === "discipline"  && <ModelMix />}
-          {gauge === "efficiency"  && <CacheEfficiency />}
-          {gauge === "hygiene"     && <Optimize />}
-          {gauge === "live"        && <LiveSessions onSelect={setSelected} />}
+          {gauge === "burn" && <RevenueLens />}
+          {gauge === "discipline" && <ModelMix />}
+          {gauge === "efficiency" && <CacheEfficiency />}
+          {gauge === "hygiene" && <Optimize />}
+          {gauge === "live" && <LiveSessions onSelect={setSelected} />}
         </div>
       )}
 
       {/* Tab bar */}
-      <div role="tablist" aria-label="Dashboard sections" className="mb-6 flex gap-1 border-b border-border">
+      <div
+        role="tablist"
+        aria-label="Dashboard sections"
+        className="mb-6 flex gap-1 border-b border-border"
+      >
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -264,17 +298,19 @@ export default function App() {
           </div>
         )}
 
-        {tab === "performance" && <>
-          <SystemHealth />
-          <MissionClock />
-          <div className="columns-1 gap-5 md:columns-2 xl:columns-3">
-            <ToolLatency />
-            <McpDrillDown />
-            <ContextHeatmap onSelect={setSelected} />
-            <Skills />
-            <AgentUsage />
-          </div>
-        </>}
+        {tab === "performance" && (
+          <>
+            <SystemHealth />
+            <MissionClock />
+            <div className="columns-1 gap-5 md:columns-2 xl:columns-3">
+              <ToolLatency />
+              <McpDrillDown />
+              <ContextHeatmap onSelect={setSelected} />
+              <Skills />
+              <AgentUsage />
+            </div>
+          </>
+        )}
 
         {tab === "hygiene" && (
           <div className="columns-1 gap-5 md:columns-2 xl:columns-3">

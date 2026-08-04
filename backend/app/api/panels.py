@@ -28,10 +28,34 @@ from ..config import (
     SUGGESTIONS_FILE,
 )
 from ..db import readonly_cursor
+from ..ingest.optimize import DETECTOR_COUNT, SEVERITY_WEIGHT
 from ..ingest.pricing import canonical_model, get_context_window, get_cost_usd
 from .ranges import percentile, resolve_range
 
 router = APIRouter(prefix="/api")
+
+_MAX_HYGIENE_WEIGHT = DETECTOR_COUNT * max(SEVERITY_WEIGHT.values())
+
+
+def _hygiene_score(severities: list[str]) -> tuple[int, str, int, int]:
+    """Score = share of the 8 waste checks you pass, weighted by severity.
+
+    The old version subtracted a flat 15/7/3 per finding from 100 and clamped
+    the penalty at 80. With 8 detectors that saturated at F on any setup failing
+    ~5 checks, and it kept reading F no matter what got fixed — a gauge that
+    can't move tells you nothing. Sharing the denominator with the detector
+    count makes each fix worth a predictable, visible number of points.
+
+    Returns (score, grade, failing, DETECTOR_COUNT).
+    """
+    weight = sum(SEVERITY_WEIGHT.get(s, 0) for s in severities)
+    score = max(0, min(100, round(100 * (1 - weight / _MAX_HYGIENE_WEIGHT))))
+    if score >= 90:   grade = "A"
+    elif score >= 75: grade = "B"
+    elif score >= 55: grade = "C"
+    elif score >= 30: grade = "D"
+    else:             grade = "F"
+    return score, grade, len(severities), DETECTOR_COUNT
 
 
 # ------------------------------------------------------------- helpers --
@@ -782,18 +806,14 @@ def optimize() -> dict[str, Any]:
         for r in rows
     ]
     total_tokens = sum(f["tokens_saved"] for f in findings)
-    penalty = sum({"high": 15, "medium": 7, "low": 3}.get(f["severity"], 0) for f in findings)
-    health_score = max(0, min(100, 100 - min(80, penalty)))
-    if health_score >= 90:   grade = "A"
-    elif health_score >= 75: grade = "B"
-    elif health_score >= 55: grade = "C"
-    elif health_score >= 30: grade = "D"
-    else:                    grade = "F"
+    health_score, grade, failing, checks = _hygiene_score([f["severity"] for f in findings])
     return {
         "findings":      findings,
         "total_tokens_saved": total_tokens,
         "health_score":  health_score,
         "health_grade":  grade,
+        "checks_failing": failing,
+        "checks_total":  checks,
         "last_scanned":  findings[0]["detected_at"] if findings else None,
     }
 
@@ -870,15 +890,9 @@ def gauge_data() -> dict[str, Any]:
         billable = int(cr["inp"] or 0) + int(cr["cr"] or 0) + int(cr["cc"] or 0)
         hit_rate = int(cr["cr"] or 0) / billable if billable else 0.0
 
-        # Hygiene: from waste_findings
+        # Hygiene: from waste_findings (one row per failing check, latest scan)
         findings = cur.execute("SELECT severity FROM waste_findings").fetchall()
-        penalty = sum({"high": 15, "medium": 7, "low": 3}.get(r["severity"], 0) for r in findings)
-        hygiene_score = max(0, min(100, 100 - min(80, penalty)))
-        if hygiene_score >= 90:    grade = "A"
-        elif hygiene_score >= 75:  grade = "B"
-        elif hygiene_score >= 55:  grade = "C"
-        elif hygiene_score >= 30:  grade = "D"
-        else:                      grade = "F"
+        hygiene_score, grade, failing, checks = _hygiene_score([r["severity"] for r in findings])
 
         # Live: active sessions
         live_n = cur.execute(
@@ -904,7 +918,8 @@ def gauge_data() -> dict[str, Any]:
             "by_family_cost": {k: round(v, 3) for k, v in sorted(by_family_cost.items())},
         },
         "efficiency":  {"value": round(hit_rate*100, 1), "hit_rate": round(hit_rate, 4)},
-        "hygiene":     {"value": hygiene_score,        "grade": grade, "score": hygiene_score},
+        "hygiene":     {"value": hygiene_score,        "grade": grade, "score": hygiene_score,
+                        "checks_failing": failing,     "checks_total": checks},
         "live":        {"count": int(live_n)},
     }
 

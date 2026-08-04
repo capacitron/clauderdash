@@ -28,6 +28,11 @@ log = logging.getLogger(__name__)
 
 _RUN_INTERVAL_S = 30 * 60       # 30 minutes
 _SCAN_DAYS      = 7
+
+# Number of checks a clean setup passes. The hygiene score is "share of checks
+# passing", so it needs the denominator, not just the list of failures.
+DETECTOR_COUNT = 8
+SEVERITY_WEIGHT = {"high": 3, "medium": 2, "low": 1}
 _HOME = Path.home()
 
 _JUNK_DIRS = frozenset([
@@ -372,9 +377,12 @@ def run_optimize_scan(conn: sqlite3.Connection) -> int:
     project_cwds = list(set(cwds))
     now = datetime.now(tz=timezone.utc).isoformat()
 
-    # Clear old findings (replace on each run)
-    conn.execute("DELETE FROM waste_findings WHERE detected_at < ?",
-                 (_since_iso(_SCAN_DAYS + 1),))
+    # Each scan is a full snapshot of the current state, so the previous one is
+    # wholly superseded. The old `detected_at < now-8d` predicate deleted almost
+    # nothing while the 30-min inserts kept piling up, so the table grew ~330
+    # rows/day of duplicates and every consumer that SUMs severity (hygiene
+    # gauge, tokens_saved total) read a number ~170x too large.
+    conn.execute("DELETE FROM waste_findings")
 
     detectors = [
         lambda: detect_junk_reads(tool_calls),
@@ -386,6 +394,7 @@ def run_optimize_scan(conn: sqlite3.Connection) -> int:
         lambda: detect_ghost_agents(tool_calls),
         lambda: detect_ghost_skills(tool_calls),
     ]
+    assert len(detectors) == DETECTOR_COUNT, "DETECTOR_COUNT out of sync"
 
     inserted = 0
     for detect in detectors:

@@ -2,7 +2,7 @@ export type Range = "today" | "7d" | "30d";
 export type Provider = "all" | "claude-code" | "codex" | "gemini";
 
 export type GaugeData = {
-  burn:       { value: number; today_usd: number; avg_usd: number };
+  burn: { value: number; today_usd: number; avg_usd: number };
   discipline: {
     value: number;
     worst_family: string;
@@ -18,8 +18,14 @@ export type GaugeData = {
     by_family_cost: Record<string, number>;
   };
   efficiency: { value: number; hit_rate: number };
-  hygiene:    { value: number; grade: string; score: number };
-  live:       { count: number };
+  hygiene: {
+    value: number;
+    grade: string;
+    score: number;
+    checks_failing: number;
+    checks_total: number;
+  };
+  live: { count: number };
 };
 
 export type PlanLimit = {
