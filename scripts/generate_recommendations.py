@@ -72,11 +72,16 @@ PROJECT_TAG_RULES: list[tuple[str, str]] = []
 # AGGREGATES ONLY. NO input_preview. error_preview capped at 80 chars.
 ALLOWED_QUERIES: dict[str, str] = {
     "error_fingerprints": """
+        -- 7d, not 30d: a burst that fully stopped weeks ago must not keep
+        -- re-flagging as "high severity, act now" for the rest of the month
+        -- it happens to still be inside the window. Same bug the flaky-tool
+        -- signal check (panels.py) already fixed with its own 14d window —
+        -- "is this happening now", not "did this ever happen this month".
         SELECT tool_name,
                substr(error_preview, 1, 80) AS fp,
                COUNT(*) AS hits
           FROM tool_calls
-         WHERE started_at >= date('now', '-30 days')
+         WHERE started_at >= date('now', '-7 days')
            AND is_error = 1
            AND error_preview IS NOT NULL
       GROUP BY tool_name, fp
@@ -508,7 +513,9 @@ def validate_recs(recs: list[dict], conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
-def write_findings(drift_recs: list[dict], llm_recs: list[dict]) -> None:
+def write_findings(
+    drift_recs: list[dict], llm_recs: list[dict], resolve_sources: list[str] | None = None
+) -> None:
     """Upsert this run's recs into the unified findings table.
 
     Deliberately a SEPARATE writable connection from the `conn` used for
@@ -520,6 +527,15 @@ def write_findings(drift_recs: list[dict], llm_recs: list[dict]) -> None:
     CHECK constraint already forbids source='llm' from auto-running, and this
     sets it explicitly so the intent reads at the call site, not just in a
     schema file three commits away.
+
+    resolve_sources defaults to ["drift", "llm"] (the full weekly run writes
+    both). --drift-only passes ["drift"] alone: resolve_missing() is already
+    source-scoped for exactly this reason (see its docstring), but this
+    function used to hardcode both sources regardless of what it was actually
+    called with — a drift-only call with llm_recs=[] would have told
+    resolve_missing() to treat "didn't run the llm pass" as "llm found
+    nothing", resolving every real llm-sourced finding out from under the
+    weekly job.
     """
     rows = []
     for r in drift_recs:
@@ -560,7 +576,7 @@ def write_findings(drift_recs: list[dict], llm_recs: list[dict]) -> None:
     try:
         scan_id = findings_db.new_scan_id()
         findings_db.upsert(write_conn, scan_id, rows)
-        findings_db.resolve_missing(write_conn, scan_id, ["drift", "llm"])
+        findings_db.resolve_missing(write_conn, scan_id, resolve_sources or ["drift", "llm"])
         write_conn.commit()
     finally:
         write_conn.close()
@@ -586,6 +602,11 @@ def append_log_line(entry: dict, path: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate suggestion box recommendations")
     parser.add_argument("--dry-run", action="store_true", help="Skip claude CLI call; print query results as JSON")
+    parser.add_argument(
+        "--drift-only", action="store_true",
+        help="Compute + write drift findings only (SQL, no claude CLI). Safe on a tight timer; "
+             "leaves llm-sourced findings from the last full run untouched.",
+    )
     args = parser.parse_args(argv)
 
     start = dt.datetime.now(dt.UTC)
@@ -612,6 +633,25 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        if args.drift_only:
+            # No run_queries (that's the llm-prompt allowlist), no claude CLI.
+            # Meant for a tight timer (~15min) so drift findings don't sit at
+            # whatever they were on the last Sunday weekly run while the
+            # underlying numbers keep moving all week.
+            try:
+                drift_recs = compute_drift(conn, CLAUDE_MD_FILE)
+            except sqlite3.Error as e:
+                log_entry["error"] = f"drift-query: {e}"
+                append_log_line(log_entry, LOG_FILE)
+                print(f"[SUGGESTIONS] ERROR drift-query: {e}", file=sys.stderr)
+                return 1
+            log_entry["drift_findings"] = len(drift_recs)
+            write_findings(drift_recs, [], resolve_sources=["drift"])
+            log_entry["duration_s"] = round((dt.datetime.now(dt.UTC) - start).total_seconds(), 2)
+            append_log_line(log_entry, LOG_FILE)
+            print(f"[SUGGESTIONS] drift-only: wrote {len(drift_recs)} drift findings")
+            return 0
+
         try:
             results = run_queries(conn)
         except sqlite3.Error as e:

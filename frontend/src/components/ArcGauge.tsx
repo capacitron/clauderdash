@@ -32,10 +32,9 @@ export type ZoneDef = {
   colors: readonly [ZoneColor, ZoneColor, ZoneColor];
 };
 
-// ── Arc gauge (Burn / Discipline / Efficiency / Hygiene) ─────────────────────
+// ── Arc gauge (Burn / Discipline / Efficiency / Hygiene / Live) ──────────────
 
-type ArcProps = {
-  variant?: "arc";
+type Props = {
   kicker: string;
   label: string;
   statDisplay: string;
@@ -46,21 +45,8 @@ type ArcProps = {
   onClick?: () => void;
 };
 
-// ── Live gauge (pulse dot + count) ───────────────────────────────────────────
-
-type LiveProps = {
-  variant: "live";
-  kicker: string;
-  label: string;
-  count: number;
-  active?: boolean;
-  onClick?: () => void;
-};
-
-type Props = ArcProps | LiveProps;
-
 export function ArcGauge(props: Props) {
-  const { kicker, label, active, onClick } = props;
+  const { kicker, label, detail, active, onClick } = props;
 
   return (
     <button
@@ -77,22 +63,18 @@ export function ArcGauge(props: Props) {
     >
       <div className="kicker mb-1 w-full text-left">{kicker}</div>
 
-      {props.variant === "live" ? (
-        <LiveFace count={props.count} active={active} />
-      ) : (
-        <ArcFace
-          value={props.value}
-          statDisplay={props.statDisplay}
-          zone={props.zone}
-          active={active}
-        />
-      )}
+      <ArcFace
+        value={props.value}
+        statDisplay={props.statDisplay}
+        zone={props.zone}
+        active={active}
+      />
 
       <div className="mt-2 font-sans text-sm font-semibold text-text">{label}</div>
 
-      {"detail" in props && props.detail && (
-        <div className="mt-0.5 font-mono text-[10px] tabular-nums text-text-subtle">
-          {props.detail}
+      {detail && (
+        <div className="mt-0.5 line-clamp-2 max-w-full px-1 text-center font-mono text-[10px] leading-tight text-text-subtle">
+          {detail}
         </div>
       )}
     </button>
@@ -176,35 +158,5 @@ function ArcFace({
         {statDisplay}
       </div>
     </>
-  );
-}
-
-// ── LiveFace ─────────────────────────────────────────────────────────────────
-
-function LiveFace({ count, active }: { count: number; active?: boolean }) {
-  const alive = count > 0;
-
-  return (
-    <div className="flex w-full flex-col items-center justify-center py-6 gap-3">
-      <div className="relative flex items-center justify-center">
-        {alive && (
-          <span className="absolute h-10 w-10 rounded-full bg-accent-green animate-ping opacity-40" />
-        )}
-        <span
-          className={clsx(
-            "relative h-5 w-5 rounded-full transition-colors",
-            alive ? "bg-accent-green" : "bg-text-subtle",
-          )}
-        />
-      </div>
-      <div
-        className={clsx(
-          "font-display text-2xl font-semibold tabular-nums leading-none",
-          active ? "text-accent-cyan" : "text-text",
-        )}
-      >
-        {count}
-      </div>
-    </div>
   );
 }

@@ -8,6 +8,7 @@ import {
 } from "./lib/api";
 import { fmtCost } from "./lib/format";
 import { ArcGauge } from "./components/ArcGauge";
+import { GaugeExplainer } from "./components/GaugeExplainer";
 import { SystemHealth } from "./panels/SystemHealth";
 import { LiveSessions } from "./panels/LiveSessions";
 import { TokenUsage } from "./panels/TokenUsage";
@@ -42,6 +43,10 @@ type ActiveGauge =
   | "live"
   | null;
 type TabId = "overview" | "cost" | "performance" | "hygiene" | "sessions";
+
+// ponytail: no documented instance cap from Anthropic, so 5 is a practical
+// ceiling not a hard one — raise if it reads red too often at normal usage.
+const LIVE_GAUGE_CAP = 5;
 
 const PROVIDERS: { value: Provider; label: string }[] = [
   { value: "all", label: "All" },
@@ -230,10 +235,15 @@ export default function App() {
           onClick={() => toggleGauge("hygiene")}
         />
         <ArcGauge
-          variant="live"
           kicker="05 · LIVE"
           label="Live"
-          count={gd?.live.count ?? 0}
+          value={Math.min(100, ((gd?.live.count ?? 0) / LIVE_GAUGE_CAP) * 100)}
+          statDisplay={`${gd?.live.count ?? 0}`}
+          detail={gd?.live.current ? gd.live.current : "idle"}
+          // No hard cap on concurrent Claude Code instances — this ceiling is a
+          // practical one: human review, not the API, becomes the bottleneck
+          // past 2-4 parallel sessions.
+          zone={{ t1: 40, t2: 80, colors: ["green", "amber", "red"] }}
           active={gauge === "live"}
           onClick={() => toggleGauge("live")}
         />
@@ -242,6 +252,7 @@ export default function App() {
       {/* Expanded gauge panel */}
       {gauge && (
         <div key={gauge} className="mb-6 mt-3 animate-fade-in">
+          <GaugeExplainer gauge={gauge} />
           {gauge === "burn" && <RevenueLens />}
           {gauge === "discipline" && <ModelMix />}
           {gauge === "efficiency" && <CacheEfficiency />}

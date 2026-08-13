@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS messages (
   output_tokens       INTEGER DEFAULT 0,
   cache_read_tokens   INTEGER DEFAULT 0,
   cache_create_tokens INTEGER DEFAULT 0,
+  cache_create_1h_tokens INTEGER DEFAULT 0,   -- 1h-TTL subset of cache_create_tokens; bills at 2x base input, not 1.25x
   cost_usd            REAL DEFAULT 0,
   text_preview        TEXT,
   agent_type          TEXT,                          -- subagent_type if this row came from a subagents/*.jsonl transcript, else NULL

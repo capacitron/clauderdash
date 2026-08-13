@@ -32,6 +32,7 @@ from ..db import readonly_cursor
 from ..ingest import findings as findings_db
 from ..ingest.optimize import DETECTOR_COUNT, SEVERITY_WEIGHT
 from .fixauth import get_or_create_token
+from ..ingest.billing import cost_label, get_billing_mode
 from ..ingest.pricing import canonical_model, get_context_window, get_cost_usd
 from .ranges import percentile, resolve_range
 
@@ -959,10 +960,16 @@ def gauge_data() -> dict[str, Any]:
         _, counted = _hygiene_findings(cur)
         hygiene_score, grade, failing, checks = _hygiene_score(counted)
 
-        # Live: active sessions
+        # Live: active sessions + what the most recently active one is doing
         live_n = cur.execute(
             "SELECT COUNT(*) AS n FROM sessions WHERE last_modified_ts>=?", (live_cutoff,)
         ).fetchone()["n"]
+        live_current = cur.execute(
+            """SELECT last_user_message FROM sessions
+                WHERE last_modified_ts>=? ORDER BY last_modified_ts DESC LIMIT 1""",
+            (live_cutoff,),
+        ).fetchone()
+        live_current_msg = live_current["last_user_message"] if live_current else None
 
     return {
         "burn":        {"value": burn_value,          "today_usd": round(today_cost, 3), "avg_usd": round(avg_30d, 3)},
@@ -985,7 +992,7 @@ def gauge_data() -> dict[str, Any]:
         "efficiency":  {"value": round(hit_rate*100, 1), "hit_rate": round(hit_rate, 4)},
         "hygiene":     {"value": hygiene_score,        "grade": grade, "score": hygiene_score,
                         "checks_failing": failing,     "checks_total": checks},
-        "live":        {"count": int(live_n)},
+        "live":        {"count": int(live_n), "current": live_current_msg},
     }
 
 
@@ -1728,8 +1735,20 @@ def process_monitor(limit: int = Query(5)) -> dict[str, Any]:
 # INTELLIGENCE — live advisory panel, no Haiku calls, pure SQL on load
 # =========================================================================
 
-def _cost(inp: int, out: int, cr: int, cw: int, model: str) -> float:
-    return get_cost_usd(model, inp, out, cr, cw)
+def _cost(inp: int, out: int, cr: int, cw: int, model: str, cw1h: int = 0) -> float:
+    return get_cost_usd(model, inp, out, cr, cw, cw1h)
+
+
+@router.get("/billing-mode")
+def billing_mode(force: bool = Query(False, description="Bypass the 5-minute cache")) -> dict[str, Any]:
+    """How this machine pays for tokens, and therefore what a dollar figure means.
+
+    Subscription users are not billed these amounts; the UI should label cost as
+    an API-equivalent estimate rather than an invoice.
+    """
+    payload = dict(get_billing_mode(force=force))
+    payload["labels"] = cost_label(payload["mode"])
+    return payload
 
 
 @router.get("/intelligence")

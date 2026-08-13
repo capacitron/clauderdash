@@ -22,8 +22,24 @@ def _configure(conn: sqlite3.Connection) -> None:
     conn.row_factory = sqlite3.Row
 
 
+# schema.sql is all CREATE TABLE IF NOT EXISTS, so it cannot add a column to a
+# table that already exists. Additive columns go here instead of in another
+# one-off migrate script.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("messages", "cache_create_1h_tokens", "INTEGER DEFAULT 0"),
+)
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _ADDED_COLUMNS:
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing or column in existing:
+            continue  # table absent (schema.sql just made it) or column already there
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init_db() -> None:
-    """Apply schema.sql. Idempotent."""
+    """Apply schema.sql, then any additive column migrations. Idempotent."""
     global _initialised
     with _init_lock:
         if _initialised:
@@ -34,6 +50,7 @@ def init_db() -> None:
             _configure(conn)
             ddl = _SCHEMA_PATH.read_text()
             conn.executescript(ddl)
+            _add_missing_columns(conn)
             conn.commit()
         finally:
             conn.close()

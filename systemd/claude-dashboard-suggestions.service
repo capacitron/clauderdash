@@ -1,13 +1,14 @@
 [Unit]
 Description=Claude Code Dashboard — weekly suggestion generator
-Documentation=https://github.com/capacitron/claude-dashboard
+Documentation=https://github.com/capacitron/clauderdash
 After=claude-dashboard.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-# Systemd user services do NOT source .bashrc — raw mise shim needed in PATH
-Environment="PATH=/home/capacitron/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
+# Systemd user services do NOT source .bashrc — raw mise shim needed in PATH.
+# %h expands to the invoking user's home dir; adjust if you don't use mise.
+Environment="PATH=%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
 # If the `claude` shim won't resolve headless (mise: "No version is set for shim"),
 # uncomment and point CLAUDE_BIN at the concrete binary, e.g.:
 # Environment="CLAUDE_BIN=%h/.local/share/mise/installs/node/25.0.0/bin/claude"

@@ -199,3 +199,68 @@ def test_claude_path_is_a_binary_not_shell_function():
     p = gen.CLAUDE_PATH
     assert "function" not in p
     assert p == "claude" or Path(p).name == "claude"
+
+
+# ---------------------------------------------------------------- write_findings scoping
+def test_write_findings_drift_only_does_not_resolve_llm(tmp_path, monkeypatch):
+    """Regression test for a bug caught while building --drift-only.
+
+    write_findings() used to hardcode resolve_missing(..., ["drift", "llm"])
+    no matter which sources it was actually called with. A drift-only call
+    (llm_recs=[]) would tell resolve_missing() that the llm pass ran and
+    found nothing, resolving every real llm-sourced finding out from under
+    the weekly job. resolve_sources scopes this to only the sources a given
+    call actually wrote.
+    """
+    schema_sql = (Path(__file__).resolve().parent.parent / "app" / "schema.sql").read_text()
+    db_path = tmp_path / "dashboard.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(schema_sql)
+    conn.execute(
+        """INSERT INTO findings(key, source, gauge, severity, title, fix_kind,
+                                 auto_run, first_seen, last_seen, last_scan)
+           VALUES('llm:abc123','llm','hygiene','low','old llm finding','manual',
+                  0,'2026-08-01','2026-08-01','2026-08-01')"""
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(gen, "DB_PATH", db_path)
+    drift_rec = {
+        "rule_ref": "CLAUDE.md:some_rule", "tier": "high",
+        "title": "some drift title", "body": "body", "evidence_sql": "SELECT 1",
+    }
+
+    gen.write_findings([drift_rec], [], resolve_sources=["drift"])
+
+    check = sqlite3.connect(db_path)
+    check.row_factory = sqlite3.Row
+    row = check.execute("SELECT resolved_at FROM findings WHERE key='llm:abc123'").fetchone()
+    check.close()
+    assert row["resolved_at"] is None, "drift-only write must not resolve llm findings"
+
+
+def test_write_findings_full_run_still_resolves_stale_llm(tmp_path, monkeypatch):
+    """The default (no resolve_sources arg) must keep resolving both sources —
+    only the explicit drift-only caller narrows the scope."""
+    schema_sql = (Path(__file__).resolve().parent.parent / "app" / "schema.sql").read_text()
+    db_path = tmp_path / "dashboard.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(schema_sql)
+    conn.execute(
+        """INSERT INTO findings(key, source, gauge, severity, title, fix_kind,
+                                 auto_run, first_seen, last_seen, last_scan)
+           VALUES('llm:stale','llm','hygiene','low','stale llm finding','manual',
+                  0,'2026-08-01','2026-08-01','2026-08-01')"""
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(gen, "DB_PATH", db_path)
+    gen.write_findings([], [])  # full run, this week's llm pass found nothing
+
+    check = sqlite3.connect(db_path)
+    check.row_factory = sqlite3.Row
+    row = check.execute("SELECT resolved_at FROM findings WHERE key='llm:stale'").fetchone()
+    check.close()
+    assert row["resolved_at"] is not None, "full run must still resolve stale llm findings"

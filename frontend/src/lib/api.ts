@@ -25,7 +25,7 @@ export type GaugeData = {
     checks_failing: number;
     checks_total: number;
   };
-  live: { count: number };
+  live: { count: number; current: string | null };
 };
 
 export type PlanLimit = {

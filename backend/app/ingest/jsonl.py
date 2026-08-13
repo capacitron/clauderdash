@@ -250,7 +250,12 @@ def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str, ag
     out = int(usage.get("output_tokens", 0) or 0)
     cr  = int(usage.get("cache_read_input_tokens", 0) or 0)
     cw  = int(usage.get("cache_creation_input_tokens", 0) or 0)
-    cost = get_cost_usd(model or "", inp, out, cr, cw) if model else 0.0
+    # cache_creation splits the write by TTL; the 1h tier costs 2x base input
+    # against the 5m tier's 1.25x. Absent on older transcripts, which then price
+    # entirely at the 5m rate exactly as they did before.
+    cache_creation = usage.get("cache_creation") or {}
+    cw1h = int(cache_creation.get("ephemeral_1h_input_tokens", 0) or 0)
+    cost = get_cost_usd(model or "", inp, out, cr, cw, cw1h) if model else 0.0
 
     if uuid and ts:
         conn.execute(
@@ -258,8 +263,8 @@ def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str, ag
             INSERT OR IGNORE INTO messages(
                 uuid, session_id, parent_uuid, role, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
-                cost_usd, text_preview, agent_type
-            ) VALUES(?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                cache_create_1h_tokens, cost_usd, text_preview, agent_type
+            ) VALUES(?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
             """,
             (
                 uuid,
@@ -271,6 +276,7 @@ def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str, ag
                 out,
                 cr,
                 cw,
+                cw1h,
                 cost,
                 agent_type,
             ),

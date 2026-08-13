@@ -42,6 +42,14 @@ _FALLBACK: dict[str, dict[str, float]] = {
 
 DEFAULT_CONTEXT_WINDOW = 200_000
 
+# Anthropic prices cache writes by TTL: 5-minute at 1.25x base input, 1-hour at 2x.
+# LiteLLM publishes a single `cache_creation_input_token_cost`, which is the 5m rate,
+# so the 1h rate is derived from base input rather than looked up. Without this,
+# every 1h cache write is under-billed by 60%, and the error is not evenly spread:
+# long Opus sessions write almost exclusively at the 1h tier while short Haiku ones
+# use 5m, so a flat rate systematically under-states the expensive models.
+CACHE_WRITE_1H_MULTIPLIER = 2.0
+
 _cache: dict[str, dict[str, float]] = {}
 
 
@@ -94,13 +102,20 @@ def get_cost_usd(
     output_tokens: int,
     cache_read_tokens: int,
     cache_write_tokens: int,
+    cache_write_1h_tokens: int = 0,
 ) -> float:
+    """Cost in USD. `cache_write_1h_tokens` is the 1-hour-TTL subset of
+    `cache_write_tokens` and is re-priced at the higher 1h rate; pass 0 (the
+    default) when the TTL split is unknown and the whole write bills at 5m."""
     p = _lookup(model)
+    tier_1h = min(cache_write_1h_tokens, cache_write_tokens)
+    tier_5m = cache_write_tokens - tier_1h
     return (
         input_tokens * p["input"]
         + output_tokens * p["output"]
         + cache_read_tokens * p["cache_read"]
-        + cache_write_tokens * p["cache_write"]
+        + tier_5m * p["cache_write"]
+        + tier_1h * p["input"] * CACHE_WRITE_1H_MULTIPLIER
     )
 
 
@@ -162,8 +177,10 @@ async def run_pricing_refresh() -> None:
     loop = asyncio.get_event_loop()
     load_pricing_sync()
 
-    # Immediate first fetch if cache is cold
-    if not _cache or _cache is _FALLBACK:
+    # Immediate first fetch if cache is cold. Compare by value: load_pricing_sync
+    # assigns dict(_FALLBACK), a copy, so an `is` check never fires and a stale
+    # disk cache would strand the server on fallback prices for a full 24h.
+    if not _cache or _cache == _FALLBACK:
         data = await loop.run_in_executor(None, _fetch_litellm)
         if data:
             _cache = data

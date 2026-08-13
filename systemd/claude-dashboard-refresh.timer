@@ -1,0 +1,13 @@
+[Unit]
+Description=Claude Code Dashboard — fast findings refresh timer (every 15 min)
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=60
+Unit=claude-dashboard-refresh.service
+
+[Install]
+# DO NOT enable at install time — opt-in only via README commands, same as
+# claude-dashboard-suggestions.timer.
+WantedBy=timers.target

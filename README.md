@@ -224,6 +224,32 @@ To disable:
 systemctl --user disable --now claude-dashboard-suggestions.timer
 ```
 
+### Enable fast refresh timer (every 15 min)
+
+The weekly timer above also drives `drift` findings — meaning premium-spend and
+error-repeat findings could be up to a week stale between Sunday runs, while
+the live `messages`/`tool_calls` data they're computed from updates in real
+time. This second timer keeps `drift` and `signal` findings fresh without
+touching the LLM-generated recommendations, which stay weekly (no `claude`
+CLI call in this path — SQL and a local GET only):
+
+```bash
+PROJECT_DIR="$(pwd)"
+sed "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
+    "$PROJECT_DIR/systemd/claude-dashboard-refresh.service" \
+    > "$HOME/.config/systemd/user/claude-dashboard-refresh.service"
+cp "$PROJECT_DIR/systemd/claude-dashboard-refresh.timer" \
+   "$HOME/.config/systemd/user/claude-dashboard-refresh.timer"
+systemctl --user daemon-reload
+systemctl --user enable --now claude-dashboard-refresh.timer
+```
+
+To disable:
+
+```bash
+systemctl --user disable --now claude-dashboard-refresh.timer
+```
+
 ## Architecture
 
 ```

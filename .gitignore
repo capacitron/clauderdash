@@ -15,6 +15,7 @@ frontend/dist/
 data/dashboard.db
 data/dashboard.db-wal
 data/dashboard.db-shm
+data/dashboard.db.bak-*
 data/recommendations.json
 data/generator.log
 
