@@ -67,6 +67,54 @@ No real data yet? Seed 50 synthetic sessions so every panel renders immediately:
 CLAUDE_DASHBOARD_DEV_MODE=1 ./install.sh
 ```
 
+## Windows (via WSL2)
+
+No native path — `install.sh` needs systemd, which Windows doesn't have. Run it inside WSL2.
+
+**The gotcha**: Claude Code Desktop on Windows writes `~/.claude/` to the **Windows** side (`C:\Users\<you>\.claude\`), not inside WSL2. Point Clauderdash at that path explicitly — nothing here assumes cross-filesystem by default.
+
+1. **WSL2 + systemd** (systemd is off by default, required here):
+   ```powershell
+   wsl --install -d Ubuntu
+   ```
+   Inside the Ubuntu shell:
+   ```bash
+   echo -e "[boot]\nsystemd=true" | sudo tee /etc/wsl.conf
+   ```
+   Back in PowerShell: `wsl --shutdown`, then reopen Ubuntu.
+
+2. **Deps**:
+   ```bash
+   sudo apt update
+   sudo apt install -y python3.11 python3.11-venv nodejs npm git
+   node -v   # want 18+; apt's default may be older — use nodesource/nvm if so
+   ```
+
+3. **Clone inside the Linux filesystem, not `/mnt/c`** (WSL2 penalizes cross-FS I/O):
+   ```bash
+   git clone https://github.com/capacitron/clauderdash.git ~/clauderdash
+   cd ~/clauderdash
+   ```
+
+4. **Point at the Windows-side Claude data before installing.** Find your Windows username with `cmd.exe /c "echo %USERNAME%"` from WSL2:
+   ```bash
+   export CLAUDE_PROJECTS_DIR="/mnt/c/Users/<WinUser>/.claude/projects"
+   ./install.sh
+   ```
+   If you install first and set this after, edit `~/.config/systemd/user/claude-dashboard.service` to add the `CLAUDE_PROJECTS_DIR=` env line, then `systemctl --user daemon-reload && systemctl --user restart claude-dashboard`.
+
+5. **Skip `cc.local`.** `/etc/hosts` inside WSL2 is invisible to the Windows browser. Use `http://localhost:7777` — WSL2 auto-forwards localhost TCP to Windows.
+
+6. **OTEL setup targets the wrong file by default.** `setup-otel.sh` writes to `$HOME/.claude/settings.json`, which inside WSL2 is the wrong file. Run it against the Windows one instead:
+   ```bash
+   HOME=/mnt/c/Users/<WinUser> ./scripts/setup-otel.sh
+   ```
+   Then fully quit and reopen Claude Code Desktop on Windows.
+
+7. **Suggestion box is optional and needs extra setup.** It shells out to `claude -p`, which Desktop app doesn't put on WSL2's `PATH`. Either `npm install -g @anthropic-ai/claude-code` inside WSL2 and authenticate it separately, or skip that one panel — everything else works without it.
+
+Verify with `./scripts/doctor.sh`, then open `http://localhost:7777` from the Windows browser.
+
 ## Enable OTEL (recommended)
 
 Without OTEL the panels still work from JSONL logs. With it you get real-time streaming plus event types that are not in JSONL (compaction, hook execution, API errors).
