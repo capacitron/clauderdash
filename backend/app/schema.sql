@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS messages (
   cost_usd            REAL DEFAULT 0,
   text_preview        TEXT,
   agent_type          TEXT,                          -- subagent_type if this row came from a subagents/*.jsonl transcript, else NULL
+  request_id          TEXT,                          -- API requestId; one API call = one usage bill, but the transcript repeats it on every content-block line
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 

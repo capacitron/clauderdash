@@ -255,16 +255,32 @@ def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str, ag
     # entirely at the 5m rate exactly as they did before.
     cache_creation = usage.get("cache_creation") or {}
     cw1h = int(cache_creation.get("ephemeral_1h_input_tokens", 0) or 0)
+
+    # One API call = one usage bill, but the transcript writes one line per
+    # content block and repeats the identical usage object on every line.
+    # Count it once: the first line of a request keeps the usage, siblings are
+    # stored with zeros (the row itself stays — tool_calls hang off it).
+    request_id = event.get("requestId") or msg.get("id")
+    if request_id and (inp or out or cr or cw):
+        dup = conn.execute(
+            "SELECT 1 FROM messages WHERE request_id = ? AND "
+            "(input_tokens > 0 OR output_tokens > 0 OR cache_read_tokens > 0 "
+            "OR cache_create_tokens > 0) LIMIT 1",
+            (request_id,),
+        ).fetchone()
+        if dup:
+            inp = out = cr = cw = cw1h = 0
+
     cost = get_cost_usd(model or "", inp, out, cr, cw, cw1h) if model else 0.0
 
     if uuid and ts:
-        conn.execute(
+        cur = conn.execute(
             """
             INSERT OR IGNORE INTO messages(
                 uuid, session_id, parent_uuid, role, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
-                cache_create_1h_tokens, cost_usd, text_preview, agent_type
-            ) VALUES(?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                cache_create_1h_tokens, cost_usd, text_preview, agent_type, request_id
+            ) VALUES(?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             """,
             (
                 uuid,
@@ -279,9 +295,12 @@ def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str, ag
                 cw1h,
                 cost,
                 agent_type,
+                request_id,
             ),
         )
-        if cost > 0:
+        # rowcount guard: a truncation-reset rescan replays lines the uuid PK
+        # already ignores — without it each replay re-adds the session cost.
+        if cost > 0 and cur.rowcount > 0:
             conn.execute(
                 "UPDATE sessions SET cost_usd = COALESCE(cost_usd, 0) + ? WHERE id = ?",
                 (cost, session_id),

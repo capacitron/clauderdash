@@ -27,6 +27,13 @@ def _configure(conn: sqlite3.Connection) -> None:
 # one-off migrate script.
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("messages", "cache_create_1h_tokens", "INTEGER DEFAULT 0"),
+    ("messages", "request_id", "TEXT"),
+)
+
+# Indexes on columns added above must be created after the column exists, so
+# they can't live in schema.sql (which runs first).
+_POST_MIGRATION_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_messages_request ON messages(request_id) WHERE request_id IS NOT NULL",
 )
 
 
@@ -51,6 +58,8 @@ def init_db() -> None:
             ddl = _SCHEMA_PATH.read_text()
             conn.executescript(ddl)
             _add_missing_columns(conn)
+            for stmt in _POST_MIGRATION_DDL:
+                conn.execute(stmt)
             conn.commit()
         finally:
             conn.close()
