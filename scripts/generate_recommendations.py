@@ -252,6 +252,15 @@ RULE_CHECKS: dict[str, str] = {
           FROM messages
          WHERE role='assistant' AND ts >= datetime('now','-30 days')
     """,
+    # Inverse of the others: higher is better. Opus share is the symptom;
+    # main-thread-only working is the cause. agent_type IS NULL == main thread.
+    "subagent_share": """
+        SELECT ROUND(100.0 *
+          COALESCE(SUM(CASE WHEN agent_type IS NOT NULL THEN cost_usd END), 0)
+          / NULLIF(SUM(cost_usd), 0), 1) AS actual
+          FROM messages
+         WHERE role='assistant' AND ts >= datetime('now','-30 days')
+    """,
     "fail_rate": """
         SELECT ROUND(100.0 * SUM(CASE WHEN outcome IN ('errored','rate_limited','truncated')
                                       THEN 1 ELSE 0 END)
