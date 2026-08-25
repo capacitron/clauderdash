@@ -17,7 +17,7 @@ from .providers.sync import sync_all_providers
 
 log = logging.getLogger(__name__)
 
-POLL_INTERVAL_S = 2.0
+POLL_INTERVAL_S = 5.0
 RECOMPUTE_EVERY_S = 30.0
 
 
@@ -42,10 +42,24 @@ async def run_watcher() -> None:
             log.exception("watcher tick failed")
 
 
+# (mtime, size) of every file as of its last successful sync. Without this the
+# poll re-opens a SQLite connection and commits a no-op write for all 2000+
+# files every tick. Set only after sync_file succeeds so failures retry.
+_seen: dict[str, tuple[float, int]] = {}
+
+
 def _tick() -> None:
     if CLAUDE_PROJECTS_DIR.exists():
         for path in CLAUDE_PROJECTS_DIR.rglob("*.jsonl"):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            sig = (st.st_mtime, st.st_size)
+            if _seen.get(str(path)) == sig:
+                continue
             jsonl.sync_file(path)
+            _seen[str(path)] = sig
     _tick_providers()
 
 
