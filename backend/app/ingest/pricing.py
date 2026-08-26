@@ -208,6 +208,30 @@ async def run_pricing_refresh() -> None:
             log.info("pricing refreshed from LiteLLM (%d models)", len(data))
 
 
+def pricing_status() -> dict[str, Any]:
+    """Health of the price table, for /api/doctor.
+
+    Refreshes failed silently for 29 days and nothing surfaced it: the fetch
+    logs at WARNING and falls back, and the fallback happened to match every
+    model in use, so no figure on the dashboard looked wrong. `degraded` is the
+    signal that matters — it means every cost on screen came from a hardcoded
+    table, not from upstream.
+    """
+    age_s: float | None = None
+    try:
+        if _CACHE_FILE.exists():
+            payload = json.loads(_CACHE_FILE.read_text())
+            age_s = time.time() - float(payload.get("ts", 0))
+    except Exception:
+        pass
+    return {
+        "model_count": len(_cache),
+        "degraded": _cache == _FALLBACK or not _cache,
+        "age_s": age_s,
+        "stale": age_s is None or age_s > _CACHE_TTL,
+    }
+
+
 def _save_cache(data: dict) -> None:
     try:
         _CACHE_FILE.write_text(json.dumps({"ts": time.time(), "data": data}))

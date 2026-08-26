@@ -33,7 +33,7 @@ from ..ingest import findings as findings_db
 from ..ingest.optimize import DETECTOR_COUNT, SEVERITY_WEIGHT
 from .fixauth import get_or_create_token
 from ..ingest.billing import cost_label, get_billing_mode
-from ..ingest.pricing import canonical_model, get_context_window, get_cost_usd
+from ..ingest.pricing import canonical_model, get_context_window, get_cost_usd, pricing_status
 from .ranges import percentile, resolve_range
 
 router = APIRouter(prefix="/api")
@@ -1142,8 +1142,28 @@ def doctor() -> dict[str, Any]:
             "ok": disk.free > 100 * 1024 * 1024,
             "detail": f"{disk.free // (1024*1024)}MiB free",
         },
+        _pricing_check(),
     ]
     return {"checks": checks, "all_green": all(c["ok"] for c in checks)}
+
+
+def _pricing_check() -> dict[str, Any]:
+    """Every dollar figure on this dashboard is computed from the price table.
+    When refreshes fail the server falls back and logs a WARNING nobody reads —
+    that state persisted 29 days undetected, survived only because the fallback
+    happened to match the models in use."""
+    status = pricing_status()
+    age_s = status["age_s"]
+    age = "never fetched" if age_s is None else f"{age_s / 86400:.1f}d old"
+    if status["degraded"]:
+        detail = f"FALLBACK PRICES IN USE — upstream refresh is failing ({age})"
+    else:
+        detail = f"{status['model_count']:,} models, {age}"
+    return {
+        "name": "pricing_cache",
+        "ok": not status["degraded"] and not status["stale"],
+        "detail": detail,
+    }
 
 
 # =========================================================================
