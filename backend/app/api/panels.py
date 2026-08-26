@@ -106,6 +106,44 @@ def _hygiene_findings(cur) -> tuple[list[dict], list[str]]:
     return display, counted
 
 
+# Errors that say nothing about tool reliability: the tool behaved correctly by
+# refusing a request it could not or should not serve. Counting them as tool
+# failures buries the real ones — the top three 7-day fingerprints were a
+# subagent capacity message (41 hits) and a fork-nesting refusal (14) sitting
+# above the one genuine repeat, WebFetch against web.archive.org (11).
+#
+# Anchored prefixes, never a bare substring: matching "rejected" anywhere in
+# error_preview caught 36 rows where tool OUTPUT contained the word, such as
+# `git push` printing "! [rejected]" for a non-fast-forward push. Those are
+# real Bash errors.
+#
+# Mirrored verbatim in RULE_CHECKS["repeat_err"] in
+# scripts/generate_recommendations.py, which is standalone by design and does
+# not import from the app package. Change both together.
+_NON_BUG_ERROR_PREFIXES = (
+    "The user doesn%",
+    "Permission for this tool use was denied%",
+    "Concurrent subagent limit reached%",
+    "Fork is not available inside a forked worker%",
+    "You've hit your session limit%",
+)
+
+
+def _non_bug_error_clause(column: str = "error_preview") -> str:
+    """SQL excluding harness refusals. Keeps NULL rows, which carry no preview.
+
+    Prefixes are inlined rather than bound as parameters because callers splice
+    this into f-string SQL where the placeholder count varies. They are
+    module-level literals, never request input, and the apostrophe in "You've"
+    is doubled for SQLite — a raw one would terminate the literal early.
+    """
+    tests = "\n                AND ".join(
+        "{} NOT LIKE '{}'".format(column, p.replace("'", "''"))
+        for p in _NON_BUG_ERROR_PREFIXES
+    )
+    return f"({column} IS NULL OR (\n                    {tests}\n              ))"
+
+
 # ------------------------------------------------------------- helpers --
 def _provider_clause(provider: str | None, alias: str = "s") -> tuple[str, list]:
     """Return (sql_fragment, params) for optional provider filter on sessions table."""
@@ -1228,7 +1266,7 @@ def two_strike(range: str = Query("30d")) -> dict[str, Any]:
     since, _, days = resolve_range(range)
     with readonly_cursor() as cur:
         rows = cur.execute(
-            """
+            f"""
             SELECT tool_name,
                    substr(error_preview, 1, 80) AS error_preview_prefix,
                    COUNT(*) AS hits,
@@ -1237,6 +1275,7 @@ def two_strike(range: str = Query("30d")) -> dict[str, Any]:
              WHERE started_at >= ?
                AND is_error = 1
                AND error_preview IS NOT NULL
+               AND {_non_bug_error_clause()}
           GROUP BY tool_name, error_preview_prefix
             HAVING COUNT(*) >= 2
           ORDER BY hits DESC
@@ -1796,22 +1835,17 @@ def intelligence() -> dict[str, Any]:
         #    harness-injected message. Excluded from both numerator AND
         #    denominator — a declined call was never actually executed, so it
         #    says nothing about whether the tool itself is reliable.
-        # Verified anchored (not `LIKE '%rejected%'`): an unanchored match
-        # against error_preview caught 36 unrelated rows where tool OUTPUT
-        # happened to contain "rejected" (e.g. `git push` printing "!
-        # [rejected]" for a non-fast-forward push) — a real Bash error, not a
-        # user decline. The harness message is a fixed prefix, so anchoring
-        # with `LIKE 'The user doesn%'` is exact.
-        cur.execute("""
+        # The full prefix list and its anchoring rationale live on
+        # _NON_BUG_ERROR_PREFIXES. This block used to carry two of them inline;
+        # the other three (subagent capacity, fork nesting, search quota) are
+        # the same class and were missing here as well as everywhere else.
+        cur.execute(f"""
             SELECT tool_name, COUNT(*) uses,
                    ROUND(100.0 * SUM(is_error) / MAX(1,COUNT(*)), 1) error_pct,
                    ROUND(AVG(CASE WHEN duration_ms > 0 THEN duration_ms END) / 1000.0, 1) avg_sec
             FROM tool_calls
             WHERE started_at >= datetime('now', '-14 days')
-              AND (error_preview IS NULL OR (
-                    error_preview NOT LIKE 'The user doesn%'
-                AND error_preview NOT LIKE 'Permission for this tool use was denied%'
-              ))
+              AND {_non_bug_error_clause()}
             GROUP BY tool_name
             HAVING uses > 50 AND error_pct > 15
             ORDER BY error_pct DESC

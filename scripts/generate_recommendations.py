@@ -268,11 +268,25 @@ RULE_CHECKS: dict[str, str] = {
           FROM sessions
          WHERE started_at >= datetime('now','-30 days')
     """,
+    # The NOT LIKE list is _NON_BUG_ERROR_PREFIXES in backend/app/api/panels.py,
+    # mirrored verbatim: this script is standalone by design and does not import
+    # from the app package. Change both together.
+    #
+    # Without them the metric measured the wrong thing entirely. The top two
+    # 7-day fingerprints were a subagent capacity message (41 hits) and a
+    # fork-nesting refusal (14) — the tool declining a request it could not
+    # serve, which says nothing about reliability. They masked the one genuine
+    # repeat, WebFetch against web.archive.org at 11.
     "repeat_err": """
         SELECT COALESCE(MAX(hits),0) AS actual FROM (
           SELECT COUNT(*) AS hits FROM tool_calls
            WHERE is_error=1 AND error_preview IS NOT NULL
              AND started_at >= datetime('now','-7 days')
+             AND error_preview NOT LIKE 'The user doesn%'
+             AND error_preview NOT LIKE 'Permission for this tool use was denied%'
+             AND error_preview NOT LIKE 'Concurrent subagent limit reached%'
+             AND error_preview NOT LIKE 'Fork is not available inside a forked worker%'
+             AND error_preview NOT LIKE 'You''ve hit your session limit%'
         GROUP BY tool_name, substr(error_preview,1,80)
         )
     """,
