@@ -13,7 +13,6 @@ import time
 
 from ..config import CLAUDE_PROJECTS_DIR
 from . import jsonl
-from .providers.sync import sync_all_providers
 
 log = logging.getLogger(__name__)
 
@@ -60,16 +59,6 @@ def _tick() -> None:
                 continue
             jsonl.sync_file(path)
             _seen[str(path)] = sig
-    _tick_providers()
-
-
-def _tick_providers() -> None:
-    from ..db import connect
-    conn = connect()
-    try:
-        sync_all_providers(conn)
-    finally:
-        conn.close()
 
 
 def _recompute() -> None:

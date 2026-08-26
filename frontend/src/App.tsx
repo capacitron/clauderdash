@@ -48,11 +48,13 @@ type TabId = "overview" | "cost" | "performance" | "hygiene" | "sessions";
 // ceiling not a hard one — raise if it reads red too often at normal usage.
 const LIVE_GAUGE_CAP = 5;
 
+// Codex and Gemini were removed 2026-08-26 with their (never-working) ingest.
+// The provider filter itself stays: _provider_clause backs several endpoints
+// and degrades correctly. Offering a source that can only ever return empty is
+// a broken affordance, not a feature.
 const PROVIDERS: { value: Provider; label: string }[] = [
   { value: "all", label: "All" },
   { value: "claude-code", label: "Claude Code" },
-  { value: "codex", label: "Codex" },
-  { value: "gemini", label: "Gemini" },
 ];
 
 const TABS: { id: TabId; label: string }[] = [
