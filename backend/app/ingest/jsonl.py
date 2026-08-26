@@ -123,6 +123,13 @@ def _upsert_session(
         )
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
+            -- Deliberately the reverse of every other column here: keep the
+            -- established value, take the incoming one only to fill a NULL.
+            -- started_at is when the session began, so first-non-null wins
+            -- forever. Omitting it entirely (the previous behaviour) pinned it
+            -- NULL for good whenever the first-seen event carried no parseable
+            -- timestamp, which hid the session from yield attribution.
+            started_at = COALESCE(sessions.started_at, excluded.started_at),
             cwd = COALESCE(excluded.cwd, sessions.cwd),
             model = COALESCE(excluded.model, sessions.model),
             last_event_at = COALESCE(excluded.last_event_at, sessions.last_event_at),
