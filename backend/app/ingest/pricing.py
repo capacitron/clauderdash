@@ -124,16 +124,29 @@ def _parse_litellm(data: dict[str, Any]) -> dict[str, dict[str, float]]:
     for name, entry in data.items():
         if not isinstance(entry, dict):
             continue
-        inp = entry.get("input_cost_per_token")
-        out = entry.get("output_cost_per_token")
-        if inp is None or out is None:
+        # Upstream is a ~4,000-model community-maintained blob and does ship
+        # malformed entries. Isolate per entry: a bad record costs itself, never
+        # the batch. Without this the exception escapes to _fetch_litellm's
+        # blanket except and throws away an otherwise successful fetch.
+        try:
+            inp = entry.get("input_cost_per_token")
+            out = entry.get("output_cost_per_token")
+            if inp is None or out is None:
+                continue
+            cw = entry.get("cache_creation_input_token_cost", inp * 1.25)
+            cr = entry.get("cache_read_input_token_cost", inp * 0.1)
+            parsed = {"input": float(inp), "output": float(out), "cache_write": float(cw), "cache_read": float(cr)}
+        except (TypeError, ValueError) as exc:
+            log.debug("pricing: skipped malformed entry %s (%s)", name, exc)
             continue
-        cw = entry.get("cache_creation_input_token_cost", inp * 1.25)
-        cr = entry.get("cache_read_input_token_cost", inp * 0.1)
-        parsed = {"input": float(inp), "output": float(out), "cache_write": float(cw), "cache_read": float(cr)}
+        # `ctx` is optional metadata; at least one upstream model carries prose
+        # here. Losing it costs a context-window reading, not the prices.
         ctx = entry.get("max_input_tokens")
         if ctx:
-            parsed["ctx"] = int(ctx)
+            try:
+                parsed["ctx"] = int(ctx)
+            except (TypeError, ValueError):
+                log.debug("pricing: non-numeric max_input_tokens for %s", name)
         result[name] = parsed
         stripped = re.sub(r"^[^/]+/", "", name)
         if stripped != name and stripped not in result:
