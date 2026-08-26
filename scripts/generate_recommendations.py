@@ -43,6 +43,7 @@ LOG_FILE = DATA_DIR / "generator.log"
 
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 from app.ingest import findings as findings_db  # noqa: E402
+from app.config import CLAUDE_MD_FILE, parse_drift_targets  # noqa: E402
 
 # ---------------------------------------------------------------- CLI ----
 # CLAUDE_BIN lets headless runners (systemd) point at a concrete binary when the
@@ -55,12 +56,9 @@ MODEL = "haiku"
 FALLBACK_MODEL = "sonnet"
 
 # ---------------------------------------------------------------- drift --
-# CLAUDE.md file holding the "Measurable Targets (Drift-Checked)" table.
-# Drift is computed locally (Python + read-only SQL); NOTHING here is ever
-# sent to a model. The model call (telemetry observations) is unchanged.
-CLAUDE_MD_FILE = Path(
-    os.environ.get("CLAUDE_DRIFT_RULES_FILE", Path.home() / "CLAUDE.md")
-)
+# CLAUDE_MD_FILE and parse_drift_targets are imported from app.config above.
+# They used to be defined here, which is how the server and this script ended
+# up grading the same behaviour against two different opus ceilings.
 
 # ---------------------------------------------------------------- tags --
 # Mirrors backend.config.PROJECT_TAG_RULES. First-match wins.
@@ -297,46 +295,6 @@ RULE_CHECKS: dict[str, str] = {
          WHERE tool_name='WebFetch' AND started_at >= datetime('now','-30 days')
     """,
 }
-
-_THRESHOLD_RE = re.compile(r"(<=|>=|<|>|=)\s*([0-9]+(?:\.[0-9]+)?)\s*(%?)")
-
-
-def parse_drift_targets(claude_md: Path) -> dict[str, dict]:
-    """Parse the 'Measurable Targets (Drift-Checked)' pipe table from CLAUDE.md.
-    Returns {id: {label, window, op, threshold, unit, raw}}. Empty on any failure
-    — a missing/garbled table simply yields zero drift checks, never a crash.
-    """
-    try:
-        text = claude_md.read_text(errors="replace")
-    except OSError:
-        return {}
-    out: dict[str, dict] = {}
-    in_section = False
-    for line in text.splitlines():
-        if line.lstrip().startswith("## "):
-            in_section = "Measurable Targets" in line
-            continue
-        if not in_section or not line.lstrip().startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 4:
-            continue
-        rid = cells[0]
-        if rid in ("id", "") or set(rid) <= {"-", ":"}:
-            continue  # header or separator row
-        m = _THRESHOLD_RE.search(cells[3])
-        if not m:
-            continue
-        out[rid] = {
-            "label": cells[1],
-            "window": cells[2],
-            "op": m.group(1),
-            "threshold": float(m.group(2)),
-            "unit": m.group(3),
-            "raw": cells[3],
-        }
-    return out
-
 
 def _satisfies(actual: float, op: str, threshold: float) -> bool:
     return {

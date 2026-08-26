@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from ..config import (
+    CACHE_HIT_TARGET,
     HEATMAP_WEEKS,
     HOME,
     OBSIDIAN_DIR,
@@ -534,7 +535,9 @@ def cache_efficiency(range: str = Query("7d")) -> dict[str, Any]:
         "range": range,
         "days": days,
         "overall_hit_rate": overall,
-        "target": 0.70,
+        # Was a hardcoded 0.70 here — a third copy, disagreeing with both
+        # CLAUDE.md and the gauge bands in App.tsx. Now one source.
+        "target": CACHE_HIT_TARGET,
         "total_billable_tokens": total_billable,
         "low_sample": total_billable < 10_000,
         "series": series,

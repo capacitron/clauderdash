@@ -216,7 +216,12 @@ export default function App() {
           value={gd?.efficiency.value ?? 50}
           statDisplay={`${((gd?.efficiency.hit_rate ?? 0) * 100).toFixed(0)}%`}
           detail="cache hit · 30d"
-          zone={{ t1: 40, t2: 70, colors: ["red", "amber", "green"] }}
+          // value is hit_rate*100 from /api/gauges, so 0-100. The old 40/70
+          // bands sat permanently green and signalled nothing: sustained is
+          // 95.6% over 30d, 94.2% over 90d, using the same read/(input+read+
+          // create) definition /api/cache reports. Red below 90, amber to 95.
+          // A regression guard — a dip here means cache-kill churn, not effort.
+          zone={{ t1: 90, t2: 95, colors: ["red", "amber", "green"] }}
           active={gauge === "efficiency"}
           onClick={() => toggleGauge("efficiency")}
         />

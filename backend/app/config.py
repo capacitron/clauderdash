@@ -2,9 +2,62 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 HOME = Path(os.path.expanduser("~"))
+
+# ------------------------------------------------------ drift targets --
+# CLAUDE.md holds the "Measurable Targets (Drift-Checked)" table. It is the
+# one place the owner edits thresholds, so it is the source of truth for both
+# consumers: the drift script (scripts/generate_recommendations.py) and this
+# running server. The parser lived only in that script until the two fell out
+# of sync; it lives here now and the script imports it back.
+#
+# Drift is computed locally, in Python and read-only SQL. Nothing parsed here
+# is ever sent to a model.
+CLAUDE_MD_FILE = Path(
+    os.environ.get("CLAUDE_DRIFT_RULES_FILE", HOME / "CLAUDE.md")
+)
+
+_THRESHOLD_RE = re.compile(r"(<=|>=|<|>|=)\s*([0-9]+(?:\.[0-9]+)?)\s*(%?)")
+
+
+def parse_drift_targets(claude_md: Path) -> dict[str, dict]:
+    """Parse the 'Measurable Targets (Drift-Checked)' pipe table from CLAUDE.md.
+    Returns {id: {label, window, op, threshold, unit, raw}}. Empty on any failure
+    — a missing/garbled table simply yields zero drift checks, never a crash.
+    """
+    try:
+        text = claude_md.read_text(errors="replace")
+    except OSError:
+        return {}
+    out: dict[str, dict] = {}
+    in_section = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("## "):
+            in_section = "Measurable Targets" in line
+            continue
+        if not in_section or not line.lstrip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        rid = cells[0]
+        if rid in ("id", "") or set(rid) <= {"-", ":"}:
+            continue  # header or separator row
+        m = _THRESHOLD_RE.search(cells[3])
+        if not m:
+            continue
+        out[rid] = {
+            "label": cells[1],
+            "window": cells[2],
+            "op": m.group(1),
+            "threshold": float(m.group(2)),
+            "unit": m.group(3),
+            "raw": cells[3],
+        }
+    return out
 
 # Source of truth for Claude Code session data
 CLAUDE_PROJECTS_DIR = Path(
@@ -67,11 +120,50 @@ MODEL_FAMILY_ORDER = [*MODEL_FAMILIES, "unknown"]
 # Opus got cheaper — a cap tuned for a 5x multiplier is too strict for a 2.5x
 # one. Tracks share of *spend*, not token count, so a price change alone
 # doesn't force a threshold retune the way a token-share target would.
-PREMIUM_TARGETS: dict[str, float] = {
+#
+# These are NOT hand-maintained here. They are parsed from the Measurable
+# Targets table in CLAUDE.md, which is the file the owner actually edits.
+# Keeping a second copy in Python is what let opus drift to two different
+# values: CLAUDE.md was raised to 45% on 2026-08-20 and this dict stayed at
+# 0.30, so intelligence()'s 7-day live check and the 30-day drift script
+# graded the same behaviour against different ceilings. Nothing reported the
+# disagreement, because each side was internally consistent.
+#
+# The literals below are a cold-start fallback for a missing or garbled table,
+# never the source of truth.
+_FALLBACK_PREMIUM_TARGETS: dict[str, float] = {
     "fable": 0.10,
-    "opus": 0.30,
+    "opus": 0.365,
+}
+_FALLBACK_CACHE_HIT_TARGET = 0.90
+
+
+def _target_fraction(targets: dict[str, dict], rid: str, default: float) -> float:
+    """A percent threshold from the parsed table, as a 0-1 fraction."""
+    row = targets.get(rid)
+    if not row:
+        return default
+    value = row["threshold"]
+    return value / 100.0 if row.get("unit") == "%" else value
+
+
+_DRIFT_TARGETS = parse_drift_targets(CLAUDE_MD_FILE)
+
+PREMIUM_TARGETS: dict[str, float] = {
+    family: _target_fraction(
+        _DRIFT_TARGETS, f"{family}_cost_share", _FALLBACK_PREMIUM_TARGETS[family]
+    )
+    for family in _FALLBACK_PREMIUM_TARGETS
 }
 PREMIUM_FAMILIES = tuple(PREMIUM_TARGETS)
+
+# Cache hit rate had THREE copies before this: CLAUDE.md, a literal 0.70 in
+# /api/cache, and the gauge zone bands in App.tsx. Sustained actual is 99.98%,
+# so none of the three had fired in a long time and nobody noticed they
+# disagreed.
+CACHE_HIT_TARGET = _target_fraction(
+    _DRIFT_TARGETS, "cache_hit", _FALLBACK_CACHE_HIT_TARGET
+)
 
 # v2 panels ------------------------------------------------------------------
 
