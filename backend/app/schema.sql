@@ -145,6 +145,27 @@ CREATE TABLE IF NOT EXISTS hook_executions (
 );
 CREATE INDEX IF NOT EXISTS idx_hook_exec_recent ON hook_executions(hook_name, timestamp DESC);
 
+-- Current status per hook. Supersedes hook_executions, which was never a
+-- history log on purpose: its PRIMARY KEY includes timestamp, and the writer
+-- generates a fresh one every 30-second tick, so INSERT OR REPLACE never
+-- replaced anything. It appended one row per hook per tick forever, reaching
+-- 3.69M rows and roughly 589MB of a 1.17GB database — more than messages and
+-- tool_calls combined — to serve one endpoint that only ever wanted the
+-- current state of about 31 hooks.
+--
+-- Keyed on hook_name alone, so the row count is bounded by the number of hook
+-- scripts. This also makes the old endpoint's global-MAX(timestamp) bug
+-- structurally impossible: that filter dropped any hook whose last write was
+-- not the single most recent one in the whole table.
+CREATE TABLE IF NOT EXISTS hook_status (
+  hook_name     TEXT PRIMARY KEY,
+  status        TEXT NOT NULL,
+  success_count INTEGER DEFAULT 0,
+  error_count   INTEGER DEFAULT 0,
+  last_ran_at   TEXT,
+  updated_at    TEXT NOT NULL
+);
+
 -- =========================================================================
 -- FIX QUEUE (v5)
 --

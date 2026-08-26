@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..db import connect as get_db
@@ -63,18 +63,30 @@ def scan_hook_directory() -> dict[str, dict]:
 
 
 def insert_hook_status(db, hooks_status: dict[str, dict]) -> None:
-    """Insert or update hook status in database."""
-    timestamp = datetime.utcnow().isoformat()
+    """Upsert current hook status, one row per hook.
+
+    This used to write `INSERT OR REPLACE INTO hook_executions` keyed on
+    (timestamp, hook_name) with a timestamp regenerated on every 30-second
+    tick — so the REPLACE never fired and the table grew without bound. Keying
+    on hook_name alone makes the upsert real and caps the table at the number
+    of hook scripts.
+    """
+    timestamp = datetime.now(timezone.utc).isoformat()
     try:
         with db:
             for hook_name, status_info in hooks_status.items():
                 db.execute(
                     """
-                    INSERT OR REPLACE INTO hook_executions
-                    (timestamp, hook_name, status, success_count, error_count, last_ran_at)
-                    VALUES (?, ?, ?, 0, 0, ?)
+                    INSERT INTO hook_status
+                        (hook_name, status, success_count, error_count,
+                         last_ran_at, updated_at)
+                    VALUES (?, ?, 0, 0, ?, ?)
+                    ON CONFLICT(hook_name) DO UPDATE SET
+                        status      = excluded.status,
+                        last_ran_at = COALESCE(excluded.last_ran_at, hook_status.last_ran_at),
+                        updated_at  = excluded.updated_at
                     """,
-                    (timestamp, hook_name, status_info["status"], status_info["last_ran_at"]),
+                    (hook_name, status_info["status"], status_info["last_ran_at"], timestamp),
                 )
     except Exception as e:
         log.error("Failed to insert hook status: %s", e)

@@ -1760,12 +1760,15 @@ def system_health() -> dict[str, Any]:
 def hook_status() -> dict[str, Any]:
     """Return current hook enable/disable status."""
     with readonly_cursor() as cur:
-        # Get latest status for each hook
+        # One row per hook, so "latest" needs no filtering. The previous query
+        # read hook_executions WHERE timestamp = (SELECT MAX(timestamp) FROM
+        # hook_executions) — a single global maximum, not a per-hook one, so
+        # any hook whose last write was not the most recent in the entire table
+        # vanished from the response instead of showing a stale status.
         rows = cur.execute(
             """
-            SELECT DISTINCT hook_name, status, last_ran_at
-              FROM hook_executions
-             WHERE timestamp = (SELECT MAX(timestamp) FROM hook_executions)
+            SELECT hook_name, status, last_ran_at
+              FROM hook_status
              ORDER BY hook_name
             """
         ).fetchall()
