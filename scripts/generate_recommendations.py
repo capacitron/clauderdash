@@ -244,9 +244,18 @@ RULE_CHECKS: dict[str, str] = {
           FROM messages
          WHERE role='assistant' AND ts >= datetime('now','-30 days')
     """,
+    # cache_create_tokens belongs in the denominator. Without it this measured
+    # read/(input+read), and raw input is a rounding error beside billions of
+    # cached reads — it returned 100.0 by construction, so a >=90% target could
+    # never fire no matter how badly caching degraded. It also disagreed with
+    # /api/cache, which has always divided by input+read+create. Same metric,
+    # two definitions, neither aware of the other.
+    #
+    # With creates counted: 95.6% over 30d, 94.2% over 90d. Now a >=90% target
+    # has room to actually trip on a cache-kill storm.
     "cache_hit": """
         SELECT ROUND(100.0 * COALESCE(SUM(cache_read_tokens),0)
-          / NULLIF(SUM(cache_read_tokens + input_tokens),0), 1) AS actual
+          / NULLIF(SUM(cache_read_tokens + input_tokens + cache_create_tokens),0), 1) AS actual
           FROM messages
          WHERE role='assistant' AND ts >= datetime('now','-30 days')
     """,
