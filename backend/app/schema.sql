@@ -133,17 +133,10 @@ CREATE INDEX IF NOT EXISTS idx_system_metrics_ts ON system_metrics(timestamp DES
 
 -- Waste findings from optimize detector: superseded by `findings` below.
 
--- Hook execution status and counts.
-CREATE TABLE IF NOT EXISTS hook_executions (
-  timestamp    TEXT NOT NULL,
-  hook_name    TEXT NOT NULL,
-  status       TEXT NOT NULL,
-  success_count INTEGER DEFAULT 0,
-  error_count  INTEGER DEFAULT 0,
-  last_ran_at  TEXT,
-  PRIMARY KEY (timestamp, hook_name)
-);
-CREATE INDEX IF NOT EXISTS idx_hook_exec_recent ON hook_executions(hook_name, timestamp DESC);
+-- hook_executions was dropped 2026-08-26 (scripts/drop_hook_executions.py).
+-- Its DDL is deliberately not kept here: leaving CREATE TABLE IF NOT EXISTS
+-- behind would silently recreate an empty table on the next start, which reads
+-- as "this is still a thing" to whoever greps next.
 
 -- Current status per hook. Supersedes hook_executions, which was never a
 -- history log on purpose: its PRIMARY KEY includes timestamp, and the writer
