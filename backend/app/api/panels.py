@@ -1067,6 +1067,7 @@ def context_heatmap() -> dict[str, Any]:
                   FROM messages
                  WHERE session_id = ?
                    AND role = 'assistant'
+                   AND COALESCE(request_id, '') NOT LIKE '%#advisor'  -- advisor's own context, not the session's
               ORDER BY ts DESC
                  LIMIT 1
                 """,
@@ -1225,6 +1226,7 @@ def _mc_avg_ctx_pct(cur, cutoff_ts: float) -> float:
               FROM messages
              WHERE session_id = ?
                AND role = 'assistant'
+               AND COALESCE(request_id, '') NOT LIKE '%#advisor'
           ORDER BY ts DESC
              LIMIT 1
             """,
