@@ -83,3 +83,22 @@ def test_context_heatmap_handles_session_with_no_assistant_message() -> None:
         conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
         conn.commit()
         conn.close()
+
+
+def test_advisor_row_is_not_the_latest_context(live_session) -> None:
+    """The advisor's own context (a different model, often far larger) lands
+    as a later synthetic row. It must not be read as the session's context."""
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO messages(uuid, session_id, role, model, ts, input_tokens, request_id)
+            VALUES (?, ?, 'assistant', 'claude-opus-5-5', '2026-01-01T00:09:00Z', 99999, 'req_x#advisor')
+            """,
+            (f"adv-{live_session}", live_session),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    rows = {s["session_id"]: s for s in client.get("/api/context-heatmap").json()["sessions"]}
+    assert rows[live_session]["current_tokens"] == 30_000
