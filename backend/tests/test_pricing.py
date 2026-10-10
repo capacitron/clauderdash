@@ -92,3 +92,11 @@ def test_entry_without_prices_is_skipped():
     result = pricing._parse_litellm({"no_prices": {"max_input_tokens": 200_000}})
 
     assert result == {}
+
+
+def test_fallback_prices_opus_5_5_not_its_prefix_sibling(monkeypatch):
+    """claude-opus-5-5 startswith claude-opus-5; the fallback must hit the
+    exact entry first. Pilot advisor call, LiteLLM-matching price."""
+    monkeypatch.setattr(pricing, "_cache", dict(pricing._FALLBACK))
+    cost = pricing.get_cost_usd("claude-opus-5-5", 52661, 1669, 0, 0, 0)
+    assert abs(cost - 0.244024) < 1e-6

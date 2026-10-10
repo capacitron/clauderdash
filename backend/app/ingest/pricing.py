@@ -27,13 +27,16 @@ _CACHE_TTL = 24 * 3600  # seconds
 
 # Hardcoded fallback — per token (not per 1M). `ctx` = max input tokens.
 # Cold-start only; the LiteLLM refresh overwrites this within a day.
+# Order matters: lookup is first-prefix-match, so "-5-5" must precede "-5".
 _FALLBACK: dict[str, dict[str, float]] = {
     "claude-fable-5":    {"input": 10e-6, "output": 50e-6,  "cache_write": 12.5e-6,  "cache_read": 1e-6,     "ctx": 1_000_000},
+    "claude-opus-5-5":   {"input": 4e-6,  "output": 20e-6,  "cache_write": 5e-6,     "cache_read": 0.2e-6,   "ctx": 1_000_000},
     "claude-opus-5":     {"input": 5e-6,  "output": 25e-6,  "cache_write": 6.25e-6,  "cache_read": 0.5e-6,   "ctx": 1_000_000},
     "claude-opus-4-8":   {"input": 5e-6,  "output": 25e-6,  "cache_write": 6.25e-6,  "cache_read": 0.5e-6,   "ctx": 1_000_000},
     "claude-opus-4-7":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6,   "ctx": 1_000_000},
     "claude-opus-4-6":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6,   "ctx": 1_000_000},
     "claude-opus-4-5":   {"input": 15e-6, "output": 75e-6,  "cache_write": 18.75e-6, "cache_read": 1.5e-6,   "ctx": 200_000},
+    "claude-sonnet-5-5": {"input": 2e-6,  "output": 10e-6,  "cache_write": 2.5e-6,   "cache_read": 0.1e-6,   "ctx": 1_000_000},
     "claude-sonnet-5":   {"input": 2e-6,  "output": 10e-6,  "cache_write": 2.5e-6,   "cache_read": 0.2e-6,   "ctx": 1_000_000},
     "claude-sonnet-4-6": {"input": 3e-6,  "output": 15e-6,  "cache_write": 3.75e-6,  "cache_read": 0.3e-6,   "ctx": 1_000_000},
     "claude-sonnet-4-5": {"input": 3e-6,  "output": 15e-6,  "cache_write": 3.75e-6,  "cache_read": 0.3e-6,   "ctx": 200_000},
