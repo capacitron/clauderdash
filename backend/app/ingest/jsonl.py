@@ -313,6 +313,39 @@ def _handle_assistant(conn: sqlite3.Connection, event: dict, session_id: str, ag
                 (cost, session_id),
             )
 
+        # The advisor bills inside the executor's call: its tokens appear only
+        # in usage.iterations (top-level usage is the executor's alone). One
+        # synthetic row per advisor iteration; the uuid derives from request_id
+        # so the sibling lines that repeat this usage collapse onto one row.
+        # ponytail: no request_id means no stable identity, so skipped.
+        iterations = (usage.get("iterations") or []) if request_id else []
+        for i, it in enumerate(iterations):
+            if not isinstance(it, dict) or it.get("type") != "advisor_message":
+                continue
+            a_model = it.get("model") or ""
+            a_in = int(it.get("input_tokens", 0) or 0)
+            a_out = int(it.get("output_tokens", 0) or 0)
+            a_cr = int(it.get("cache_read_input_tokens", 0) or 0)
+            a_cw = int(it.get("cache_creation_input_tokens", 0) or 0)
+            a_cw1h = int((it.get("cache_creation") or {}).get("ephemeral_1h_input_tokens", 0) or 0)
+            a_cost = get_cost_usd(a_model, a_in, a_out, a_cr, a_cw, a_cw1h) if a_model else 0.0
+            a_cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO messages(
+                    uuid, session_id, parent_uuid, role, model, ts,
+                    input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
+                    cache_create_1h_tokens, cost_usd, text_preview, agent_type, request_id
+                ) VALUES(?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                """,
+                (f"{request_id}#advisor{i}", session_id, uuid, a_model or None, ts,
+                 a_in, a_out, a_cr, a_cw, a_cw1h, a_cost, agent_type, f"{request_id}#advisor"),
+            )
+            if a_cost > 0 and a_cur.rowcount > 0:
+                conn.execute(
+                    "UPDATE sessions SET cost_usd = COALESCE(cost_usd, 0) + ? WHERE id = ?",
+                    (a_cost, session_id),
+                )
+
     # tool_use blocks open tool_calls
     content = msg.get("content")
     if isinstance(content, list):

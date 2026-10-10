@@ -14,6 +14,7 @@ import sqlite3
 from pathlib import Path
 
 from app.ingest.jsonl import _handle_assistant
+from app.ingest.pricing import get_cost_usd
 
 _SCHEMA = Path(__file__).resolve().parent.parent / "app" / "schema.sql"
 
@@ -63,16 +64,57 @@ def _ingest(conn, events):
         _handle_assistant(conn, e, "s1")
 
 
-def test_advisor_iterations_were_ignored():
-    """Characterization of the pre-fix ledger: one usage-bearing executor row,
-    no Opus row anywhere."""
+def _advisor_rows(conn):
+    return conn.execute(
+        "SELECT uuid, model, input_tokens, output_tokens, cost_usd, parent_uuid "
+        "FROM messages WHERE request_id = ?", (REQ + "#advisor",)
+    ).fetchall()
+
+
+def _session_cost(conn):
+    return conn.execute("SELECT cost_usd FROM sessions WHERE id='s1'").fetchone()[0]
+
+
+def test_one_advisor_row_across_siblings():
     conn = _conn()
     _ingest(conn, [_event(u, t) for u, t in SIBLINGS])
 
+    rows = _advisor_rows(conn)
+    assert len(rows) == 1
+    uuid, model, inp, out, cost, parent = rows[0]
+    assert uuid == REQ + "#advisor1"
+    assert (model, inp, out) == ("claude-opus-5-5", 52661, 1669)
+    assert parent == SIBLINGS[0][0]
+    assert cost == get_cost_usd("claude-opus-5-5", 52661, 1669, 0, 0, 0)
+
+    # Executor row still billed once, unchanged.
     billed = conn.execute(
-        "SELECT model FROM messages WHERE input_tokens > 0 OR output_tokens > 0"
+        "SELECT model, cost_usd FROM messages WHERE request_id = ? AND output_tokens > 0", (REQ,)
     ).fetchall()
-    assert billed == [("claude-sonnet-5-5",)]
-    assert conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE model LIKE 'claude-opus%'"
-    ).fetchone()[0] == 0
+    assert len(billed) == 1 and billed[0][0] == "claude-sonnet-5-5"
+    assert abs(_session_cost(conn) - (billed[0][1] + cost)) < 1e-12
+
+
+def test_replay_adds_nothing():
+    conn = _conn()
+    events = [_event(u, t) for u, t in SIBLINGS]
+    _ingest(conn, events)
+    before = (_session_cost(conn), conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+    _ingest(conn, events)
+    after = (_session_cost(conn), conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+    assert before == after
+
+
+def test_no_iterations_is_unchanged():
+    conn = _conn()
+    usage = {k: v for k, v in USAGE.items() if k != "iterations"}
+    _ingest(conn, [_event(SIBLINGS[0][0], SIBLINGS[0][1], usage=usage)])
+    assert _advisor_rows(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_no_request_id_skips_advisor():
+    conn = _conn()
+    e = _event(SIBLINGS[0][0], SIBLINGS[0][1], req=None)
+    _ingest(conn, [e])
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE uuid LIKE '%#advisor%'").fetchone()[0] == 0
