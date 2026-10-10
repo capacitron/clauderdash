@@ -17,7 +17,7 @@ HOME = Path(os.path.expanduser("~"))
 # Drift is computed locally, in Python and read-only SQL. Nothing parsed here
 # is ever sent to a model.
 CLAUDE_MD_FILE = Path(
-    os.environ.get("CLAUDE_DRIFT_RULES_FILE", HOME / "CLAUDE.md")
+    os.environ.get("CLAUDE_DRIFT_RULES_FILE", HOME / ".claude" / "CLAUDE.md")
 )
 
 _THRESHOLD_RE = re.compile(r"(<=|>=|<|>|=)\s*([0-9]+(?:\.[0-9]+)?)\s*(%?)")
