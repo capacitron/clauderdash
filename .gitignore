@@ -38,3 +38,4 @@ data/.fix-token
 # Stray root-level DB from a mistaken `sqlite3 dashboard.db`. Real one is data/.
 /dashboard.db
 /data/backfill_*_revert_*.txt
+data/archive/*.bak*
